@@ -18,8 +18,7 @@ import { CheckCircle2, Eye, EyeOff, AlertCircle } from 'lucide-react-native';
 import MonochromeBackground from '../components/landing/MonochromeBackground';
 import MonochromeFunnelLogo from '../components/landing/MonochromeFunnelLogo';
 import { useAppStore } from '../store/useAppStore';
-
-const API_URL = 'http://100.107.68.53:8000';
+import { API_URL } from '../constants/api';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
