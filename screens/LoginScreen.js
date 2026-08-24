@@ -154,7 +154,8 @@ export default function LoginScreen() {
       setTimeout(() => {
         navigation.replace('Home');
       }, 3000);
-    } catch (_err) {
+    } catch (err) {
+      console.log('Login fetch error:', err);
       setIsSubmitting(false);
       setErrorMessage(
         'Unable to reach the server. Please check your network connection.'
