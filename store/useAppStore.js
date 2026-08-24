@@ -1,0 +1,73 @@
+import { create } from 'zustand';
+
+export const useAppStore = create((set) => ({
+  // --- Auth state ---
+  user: null, // { id, name, email } or null
+  token: null, // string or null
+  isAuthenticated: false,
+
+  setAuth: (user, token) =>
+    set({
+      user,
+      token,
+      isAuthenticated: Boolean(token),
+    }),
+
+  logout: () =>
+    set({
+      user: null,
+      token: null,
+      isAuthenticated: false,
+      activeBatch: null,
+      candidates: [],
+      comparisonSelection: [],
+    }),
+
+  // --- Batch state ---
+  activeBatch: null, // { id, job_title, job_description } or null
+
+  setActiveBatch: (activeBatch) =>
+    set({
+      activeBatch,
+    }),
+
+  // --- Candidates state ---
+  candidates: [],
+
+  setCandidates: (candidates) =>
+    set({
+      candidates,
+    }),
+
+  updateCandidateStatus: (candidateId, newStatus) =>
+    set((state) => ({
+      candidates: state.candidates.map((candidate) =>
+        candidate.candidate_id === candidateId || candidate.id === candidateId
+          ? { ...candidate, status: newStatus }
+          : candidate
+      ),
+    })),
+
+  // --- Comparison state ---
+  comparisonSelection: [], // array of candidate_ids, max 3
+
+  toggleComparisonSelection: (candidateId) =>
+    set((state) => {
+      const exists = state.comparisonSelection.includes(candidateId);
+      if (exists) {
+        return {
+          comparisonSelection: state.comparisonSelection.filter(
+            (id) => id !== candidateId
+          ),
+        };
+      }
+      if (state.comparisonSelection.length >= 3) {
+        return state; // capped at max 3
+      }
+      return {
+        comparisonSelection: [...state.comparisonSelection, candidateId],
+      };
+    }),
+}));
+
+export default useAppStore;
