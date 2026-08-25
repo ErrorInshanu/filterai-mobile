@@ -45,3 +45,6 @@ class SignupRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+class AnalyzeRequest(BaseModel):
+    batch_id: str

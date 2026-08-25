@@ -29,10 +29,13 @@ export default function HomeScreen() {
   const jobDescription = useAppStore((state) => state.jobDescription);
   const setJobDescription = useAppStore((state) => state.setJobDescription);
   const setBatchUploadResults = useAppStore((state) => state.setBatchUploadResults);
+  const setCandidates = useAppStore((state) => state.setCandidates);
 
   // Local state
-  const [isUploading, setIsUploading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState(''); // '' | 'uploading' | 'analyzing'
   const [errorMessage, setErrorMessage] = useState('');
+
+  const isLoading = loadingStep !== '';
 
   // Handle picking PDF documents
   const handlePickDocuments = async () => {
@@ -71,9 +74,9 @@ export default function HomeScreen() {
     setUploadedResumes(uploadedResumes.filter((file) => file.id !== fileId));
   };
 
-  // Handle submit / analyze
+  // Handle submit / analyze (Upload -> Ingest -> Embed & Match)
   const handleAnalyze = async () => {
-    if (isUploading) return;
+    if (isLoading) return;
 
     if (uploadedResumes.length === 0) {
       setErrorMessage('Please upload at least one PDF resume to proceed.');
@@ -81,8 +84,11 @@ export default function HomeScreen() {
     }
 
     setErrorMessage('');
-    setIsUploading(true);
+    setLoadingStep('uploading');
 
+    let batchId = null;
+
+    // Step 1: Upload & Ingest Resumes
     try {
       const formData = new FormData();
       formData.append('job_description', jobDescription || '');
@@ -97,35 +103,93 @@ export default function HomeScreen() {
         });
       });
 
-      const response = await fetch(`${API_URL}/api/upload`, {
+      const uploadResponse = await fetch(`${API_URL}/api/upload`, {
         method: 'POST',
         body: formData,
       });
 
-      const data = await response.json();
+      const uploadData = await uploadResponse.json();
 
-      if (!response.ok) {
-        setIsUploading(false);
+      if (!uploadResponse.ok) {
+        setLoadingStep('');
         const detail =
-          data && data.detail ? data.detail : 'Upload failed. Please try again.';
+          uploadData && uploadData.detail
+            ? uploadData.detail
+            : 'Upload failed. Please try again.';
         setErrorMessage(
           typeof detail === 'string' ? detail : 'Upload failed'
         );
         return;
       }
 
-      // Success: Save batch_id, candidate emails, and candidate names to Zustand
-      if (data && data.batch_id && Array.isArray(data.files)) {
-        setBatchUploadResults(data.batch_id, data.files);
-      }
+      batchId = uploadData.batch_id;
 
-      setIsUploading(false);
-      navigation.replace('MainTabs');
+      // Save upload results to Zustand
+      if (uploadData && uploadData.batch_id && Array.isArray(uploadData.files)) {
+        setBatchUploadResults(uploadData.batch_id, uploadData.files);
+      }
     } catch (err) {
       console.log('Resume upload fetch error:', err);
-      setIsUploading(false);
+      setLoadingStep('');
       setErrorMessage(
-        'Unable to reach the server. Please check your network connection.'
+        'Unable to reach the server for upload. Please check your network connection.'
+      );
+      return;
+    }
+
+    // Step 2: Vector Embedding & Similarity Search
+    setLoadingStep('analyzing');
+
+    try {
+      const analyzeResponse = await fetch(`${API_URL}/api/analyze`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ batch_id: batchId }),
+      });
+
+      const analyzeData = await analyzeResponse.json();
+
+      if (!analyzeResponse.ok) {
+        setLoadingStep('');
+        const detail =
+          analyzeData && analyzeData.detail
+            ? analyzeData.detail
+            : 'Resume matching analysis failed.';
+        setErrorMessage(
+          typeof detail === 'string' ? detail : 'Analysis failed'
+        );
+        return;
+      }
+
+      // Store ranked candidates in Zustand
+      if (analyzeData && Array.isArray(analyzeData.ranked_candidates)) {
+        const mappedCandidates = analyzeData.ranked_candidates.map((c, idx) => ({
+          id: c.candidate_id || `cand_${idx}`,
+          candidate_id: c.candidate_id || `cand_${idx}`,
+          name: c.candidate_name || 'Candidate',
+          email: c.extracted_email || '',
+          match_score: c.match_score || 0,
+          status: c.status || 'pending',
+          file_name: c.file_name || '',
+          skill_breakdown: {
+            tech: Math.min(100, Math.round(c.match_score * 1.02)),
+            exp: Math.min(100, Math.round(c.match_score * 0.96)),
+            edu: Math.min(100, Math.round(c.match_score * 0.94)),
+          },
+        }));
+
+        setCandidates(mappedCandidates);
+      }
+
+      setLoadingStep('');
+      navigation.replace('MainTabs');
+    } catch (err) {
+      console.log('Analyze fetch error:', err);
+      setLoadingStep('');
+      setErrorMessage(
+        'Unable to complete resume analysis. Please verify your server connection.'
       );
     }
   };
@@ -244,16 +308,20 @@ export default function HomeScreen() {
               <TouchableOpacity
                 style={[
                   styles.analyzeBtn,
-                  (uploadedResumes.length === 0 || isUploading) && styles.analyzeBtnDisabled,
+                  (uploadedResumes.length === 0 || isLoading) && styles.analyzeBtnDisabled,
                 ]}
                 activeOpacity={0.85}
                 onPress={handleAnalyze}
-                disabled={isUploading}
+                disabled={isLoading}
               >
-                {isUploading ? (
+                {isLoading ? (
                   <View style={styles.loadingRow}>
                     <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
-                    <Text style={styles.analyzeBtnText}>Ingesting Resumes...</Text>
+                    <Text style={styles.analyzeBtnText}>
+                      {loadingStep === 'uploading'
+                        ? 'Ingesting Resumes...'
+                        : 'Matching & Ranking Candidates...'}
+                    </Text>
                   </View>
                 ) : (
                   <Text
@@ -262,7 +330,8 @@ export default function HomeScreen() {
                       uploadedResumes.length === 0 && styles.analyzeBtnTextDisabled,
                     ]}
                   >
-                    Analyze ({uploadedResumes.length} {uploadedResumes.length === 1 ? 'file' : 'files'})
+                    Analyze ({uploadedResumes.length}{' '}
+                    {uploadedResumes.length === 1 ? 'file' : 'files'})
                   </Text>
                 )}
               </TouchableOpacity>

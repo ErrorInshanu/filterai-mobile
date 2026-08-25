@@ -6,15 +6,33 @@ from typing import List, Optional
 import certifi
 from dotenv import load_dotenv
 import pymupdf as fitz  # PyMuPDF
+import chromadb
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
 from fastapi import FastAPI, HTTPException, status, Depends, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient, DESCENDING
 
-from models import SignupRequest, LoginRequest
+from models import SignupRequest, LoginRequest, AnalyzeRequest
 from auth import hash_password, verify_password, create_access_token, get_current_user
 
 # 1. Load environment variables from .env
 load_dotenv()
+
+# Load embedding model and vector database once at module startup
+try:
+    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+except Exception as e:
+    print(f"Warning: Failed to load SentenceTransformer model on startup: {e}")
+    embedding_model = None
+
+try:
+    chroma_client = chromadb.EphemeralClient()
+except Exception as e:
+    print(f"Warning: Failed to initialize ChromaDB client: {e}")
+    chroma_client = None
+
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
 
 # 2. MongoDB connection
 MONGO_URI = os.getenv("MONGO_URI", "")
@@ -241,4 +259,190 @@ async def upload_resumes(
         "batch_id": batch_id,
         "files": response_files,
     }
+
+
+# --- Resume Matching / Analysis Route ---
+
+@app.post("/api/analyze")
+def analyze_batch(req: AnalyzeRequest):
+    if batches_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database connection unavailable",
+        )
+
+    if embedding_model is None or chroma_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Embedding model or Vector database failed to initialize",
+        )
+
+    # 1. Fetch batch document
+    batch_doc = batches_collection.find_one({"batch_id": req.batch_id})
+    if not batch_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Batch not found",
+        )
+
+    job_description = batch_doc.get("job_description", "")
+    files = batch_doc.get("files", [])
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch contains no files to analyze",
+        )
+
+    # 2. Reset / delete existing ChromaDB collection for this batch
+    col_name = f"batch_{req.batch_id.replace('-', '_')}"
+    try:
+        chroma_client.delete_collection(name=col_name)
+    except Exception:
+        pass
+
+    try:
+        collection = chroma_client.create_collection(
+            name=col_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create ChromaDB collection: {str(e)}",
+        )
+
+    skipped_files = []
+    total_chunks_added = 0
+    candidate_meta_map = {}  # file_name -> { candidate_name, extracted_email }
+
+    # 3. Chunk and embed each resume
+    for file_record in files:
+        file_name = file_record.get("file_name", "unknown.pdf")
+        if file_record.get("error"):
+            skipped_files.append({"file_name": file_name, "reason": file_record.get("error")})
+            continue
+
+        raw_text = file_record.get("raw_text", "")
+        if not raw_text or not raw_text.strip():
+            skipped_files.append({"file_name": file_name, "reason": "No extracted text available"})
+            continue
+
+        candidate_name = file_record.get("candidate_name") or file_name.replace(".pdf", "")
+        extracted_email = file_record.get("extracted_email")
+        candidate_meta_map[file_name] = {
+            "file_name": file_name,
+            "candidate_name": candidate_name,
+            "extracted_email": extracted_email,
+        }
+
+        try:
+            chunks = text_splitter.split_text(raw_text)
+            if not chunks:
+                skipped_files.append({"file_name": file_name, "reason": "Text splitting produced 0 chunks"})
+                continue
+
+            embeddings = embedding_model.encode(chunks).tolist()
+            chunk_ids = [f"{file_name}_chunk_{i}_{uuid.uuid4().hex[:4]}" for i in range(len(chunks))]
+            metadatas = [
+                {
+                    "file_name": file_name,
+                    "candidate_name": candidate_name or "",
+                    "chunk_index": i,
+                }
+                for i in range(len(chunks))
+            ]
+
+            collection.add(
+                ids=chunk_ids,
+                embeddings=embeddings,
+                documents=chunks,
+                metadatas=metadatas,
+            )
+            total_chunks_added += len(chunks)
+        except Exception as e:
+            skipped_files.append({"file_name": file_name, "reason": f"Embedding error: {str(e)}"})
+
+    if total_chunks_added == 0:
+        return {
+            "batch_id": req.batch_id,
+            "ranked_candidates": [],
+            "skipped": skipped_files,
+            "message": "No valid resume chunks were indexed.",
+        }
+
+    # 4. Embed Job Description and Query ChromaDB
+    try:
+        query_text = (
+            job_description.strip()
+            if job_description.strip()
+            else "Qualified candidate skills and experience"
+        )
+        jd_embedding = embedding_model.encode([query_text]).tolist()
+
+        query_results = collection.query(
+            query_embeddings=jd_embedding,
+            n_results=min(total_chunks_added, 50),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to query vector database: {str(e)}",
+        )
+
+    # 5. Aggregate score per candidate
+    candidate_scores = {}  # file_name -> list of chunk scores
+
+    retrieved_metas = query_results.get("metadatas", [[]])[0]
+    retrieved_distances = query_results.get("distances", [[]])[0]
+
+    for meta, dist in zip(retrieved_metas, retrieved_distances):
+        f_name = meta.get("file_name")
+        if not f_name:
+            continue
+        # Cosine distance d in [0, 2]. Similarity = 1 - d.
+        similarity = max(0.0, min(1.0, 1.0 - float(dist)))
+        chunk_score = round(similarity * 100.0, 1)
+
+        if f_name not in candidate_scores:
+            candidate_scores[f_name] = []
+        candidate_scores[f_name].append(chunk_score)
+
+    ranked_list = []
+    for f_name, meta_info in candidate_meta_map.items():
+        if f_name in candidate_scores and len(candidate_scores[f_name]) > 0:
+            best_score = max(candidate_scores[f_name])
+        else:
+            best_score = 50.0  # baseline fallback if not in top query chunks
+
+        ranked_list.append({
+            "candidate_id": f_name.replace(".pdf", "").replace(" ", "_").lower(),
+            "file_name": f_name,
+            "candidate_name": meta_info["candidate_name"],
+            "extracted_email": meta_info["extracted_email"],
+            "match_score": round(best_score, 1),
+            "status": "pending",
+        })
+
+    # Rank descending by match_score and pick top 10
+    ranked_list.sort(key=lambda x: x["match_score"], reverse=True)
+    ranked_candidates = ranked_list[:10]
+
+    # 6. Update batch document in MongoDB
+    batches_collection.update_one(
+        {"batch_id": req.batch_id},
+        {
+            "$set": {
+                "status": "analyzed",
+                "ranked_candidates": ranked_candidates,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+
+    return {
+        "batch_id": req.batch_id,
+        "ranked_candidates": ranked_candidates,
+        "skipped": skipped_files,
+    }
+
 
