@@ -6,9 +6,6 @@ from typing import List, Optional
 import certifi
 from dotenv import load_dotenv
 import pymupdf as fitz  # PyMuPDF
-import chromadb
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
 from fastapi import FastAPI, HTTPException, status, Depends, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient, DESCENDING
@@ -19,20 +16,35 @@ from auth import hash_password, verify_password, create_access_token, get_curren
 # 1. Load environment variables from .env
 load_dotenv()
 
-# Load embedding model and vector database once at module startup
-try:
-    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-except Exception as e:
-    print(f"Warning: Failed to load SentenceTransformer model on startup: {e}")
-    embedding_model = None
+# --- Lazy-loaded Globals for ML & Vector DB ---
+_embedding_model = None
+_chroma_client = None
+_text_splitter = None
 
-try:
-    chroma_client = chromadb.EphemeralClient()
-except Exception as e:
-    print(f"Warning: Failed to initialize ChromaDB client: {e}")
-    chroma_client = None
+def get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        print("Loading embedding model...")
+        from sentence_transformers import SentenceTransformer
+        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        print("Embedding model loaded")
+    return _embedding_model
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+def get_chroma_client():
+    global _chroma_client
+    if _chroma_client is None:
+        print("Initializing ChromaDB client...")
+        import chromadb
+        _chroma_client = chromadb.EphemeralClient()
+        print("ChromaDB client initialized")
+    return _chroma_client
+
+def get_text_splitter():
+    global _text_splitter
+    if _text_splitter is None:
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        _text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    return _text_splitter
 
 # 2. MongoDB connection
 MONGO_URI = os.getenv("MONGO_URI", "")
@@ -271,12 +283,6 @@ def analyze_batch(req: AnalyzeRequest):
             detail="Database connection unavailable",
         )
 
-    if embedding_model is None or chroma_client is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Embedding model or Vector database failed to initialize",
-        )
-
     # 1. Fetch batch document
     batch_doc = batches_collection.find_one({"batch_id": req.batch_id})
     if not batch_doc:
@@ -291,6 +297,17 @@ def analyze_batch(req: AnalyzeRequest):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Batch contains no files to analyze",
+        )
+
+    # Lazy-load embedding model, ChromaDB client, and text splitter
+    try:
+        embedding_model = get_embedding_model()
+        chroma_client = get_chroma_client()
+        text_splitter = get_text_splitter()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Embedding model or Vector database failed to load: {str(e)}",
         )
 
     # 2. Reset / delete existing ChromaDB collection for this batch
