@@ -19,8 +19,76 @@ export const useAppStore = create((set) => ({
       token: null,
       isAuthenticated: false,
       activeBatch: null,
+      currentBatchId: null,
+      uploadedResumes: [],
+      jobDescription: '',
+      candidateEmails: {},
+      candidateNames: {},
       candidates: [],
       comparisonSelection: [],
+    }),
+
+  // --- Upload / Ingestion state ---
+  uploadedResumes: [], // array of { id, name, size, uri, mimeType }
+  jobDescription: '',
+  candidateEmails: {}, // { [fileName]: email }
+  candidateNames: {}, // { [fileName]: name }
+  currentBatchId: null,
+
+  setUploadedResumes: (uploadedResumes) =>
+    set({
+      uploadedResumes,
+    }),
+
+  setJobDescription: (jobDescription) =>
+    set({
+      jobDescription,
+    }),
+
+  setCandidateEmail: (fileName, email) =>
+    set((state) => ({
+      candidateEmails: {
+        ...state.candidateEmails,
+        [fileName]: email,
+      },
+    })),
+
+  setCandidateName: (fileName, name) =>
+    set((state) => ({
+      candidateNames: {
+        ...state.candidateNames,
+        [fileName]: name,
+      },
+    })),
+
+  setCurrentBatchId: (currentBatchId) =>
+    set({
+      currentBatchId,
+    }),
+
+  setBatchUploadResults: (batchId, files = []) =>
+    set((state) => {
+      const newEmails = { ...state.candidateEmails };
+      const newNames = { ...state.candidateNames };
+
+      files.forEach((file) => {
+        if (file.file_name) {
+          // If extracted_email is present and user has not manually set an email, populate it
+          if (file.extracted_email && !newEmails[file.file_name]) {
+            newEmails[file.file_name] = file.extracted_email;
+          }
+          // Set candidate name if present
+          if (file.candidate_name && !newNames[file.file_name]) {
+            newNames[file.file_name] = file.candidate_name;
+          }
+        }
+      });
+
+      return {
+        currentBatchId: batchId,
+        candidateEmails: newEmails,
+        candidateNames: newNames,
+      };
     }),
 
   // --- Batch state ---

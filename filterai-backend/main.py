@@ -1,8 +1,12 @@
 import os
+import re
+import uuid
 from datetime import datetime, timezone
+from typing import List, Optional
 import certifi
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, status, Depends
+import pymupdf as fitz  # PyMuPDF
+from fastapi import FastAPI, HTTPException, status, Depends, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient, DESCENDING
 
@@ -143,3 +147,98 @@ def get_me(current_user: dict = Depends(get_current_user)):
         "id": current_user["id"],
         "email": current_user["email"]
     }
+
+# --- Ingestion / Resume Upload Route ---
+
+EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+
+@app.post("/api/upload")
+async def upload_resumes(
+    files: List[UploadFile] = File(...),
+    job_description: str = Form(""),
+):
+    if batches_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database connection unavailable",
+        )
+
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No files uploaded",
+        )
+
+    batch_id = str(uuid.uuid4())
+    file_records = []
+    response_files = []
+
+    for file in files:
+        file_name = file.filename or "unknown.pdf"
+        try:
+            file_bytes = await file.read()
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            extracted_text = ""
+            for page in doc:
+                extracted_text += page.get_text()
+            extracted_text = extracted_text.strip()
+
+            # Email extraction via regex
+            email_match = EMAIL_REGEX.search(extracted_text)
+            extracted_email = email_match.group(0) if email_match else None
+
+            # Best-guess candidate name extraction
+            candidate_name = None
+            lines = [line.strip() for line in extracted_text.splitlines() if line.strip()]
+            if lines:
+                first_line = lines[0][:60].strip()
+                if first_line and "@" not in first_line:
+                    candidate_name = first_line
+
+            text_length = len(extracted_text)
+
+            record = {
+                "file_name": file_name,
+                "candidate_name": candidate_name,
+                "extracted_email": extracted_email,
+                "text_length": text_length,
+                "raw_text": extracted_text,
+            }
+            file_records.append(record)
+
+            response_files.append({
+                "file_name": file_name,
+                "candidate_name": candidate_name,
+                "extracted_email": extracted_email,
+                "text_length": text_length,
+            })
+        except Exception as e:
+            file_records.append({
+                "file_name": file_name,
+                "error": str(e),
+                "candidate_name": None,
+                "extracted_email": None,
+                "text_length": 0,
+            })
+            response_files.append({
+                "file_name": file_name,
+                "error": f"Failed to parse PDF: {str(e)}",
+                "candidate_name": None,
+                "extracted_email": None,
+                "text_length": 0,
+            })
+
+    batch_doc = {
+        "batch_id": batch_id,
+        "job_description": job_description,
+        "created_at": datetime.now(timezone.utc),
+        "files": file_records,
+        "status": "uploaded",
+    }
+    batches_collection.insert_one(batch_doc)
+
+    return {
+        "batch_id": batch_id,
+        "files": response_files,
+    }
+
