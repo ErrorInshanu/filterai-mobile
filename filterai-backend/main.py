@@ -25,8 +25,8 @@ def get_embedding_model():
     global _embedding_model
     if _embedding_model is None:
         print("Loading embedding model...")
-        from sentence_transformers import SentenceTransformer
-        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        from fastembed import TextEmbedding
+        _embedding_model = TextEmbedding("BAAI/bge-small-en-v1.5")
         print("Embedding model loaded")
     return _embedding_model
 
@@ -358,7 +358,7 @@ def analyze_batch(req: AnalyzeRequest):
                 skipped_files.append({"file_name": file_name, "reason": "Text splitting produced 0 chunks"})
                 continue
 
-            embeddings = embedding_model.encode(chunks).tolist()
+            embeddings = [e.tolist() for e in embedding_model.embed(chunks)]
             chunk_ids = [f"{file_name}_chunk_{i}_{uuid.uuid4().hex[:4]}" for i in range(len(chunks))]
             metadatas = [
                 {
@@ -394,7 +394,7 @@ def analyze_batch(req: AnalyzeRequest):
             if job_description.strip()
             else "Qualified candidate skills and experience"
         )
-        jd_embedding = embedding_model.encode([query_text]).tolist()
+        jd_embedding = [list(embedding_model.embed([query_text]))[0].tolist()]
 
         query_results = collection.query(
             query_embeddings=jd_embedding,
