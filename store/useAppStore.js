@@ -28,6 +28,18 @@ export const useAppStore = create((set) => ({
       comparisonSelection: [],
     }),
 
+  resetAll: () =>
+    set({
+      uploadedResumes: [],
+      jobDescription: '',
+      candidateEmails: {},
+      candidateNames: {},
+      currentBatchId: null,
+      candidates: [],
+      activeBatch: null,
+      comparisonSelection: [],
+    }),
+
   // --- Upload / Ingestion state ---
   uploadedResumes: [], // array of { id, name, size, uri, mimeType }
   jobDescription: '',

@@ -30,6 +30,7 @@ export default function HomeScreen() {
   const setJobDescription = useAppStore((state) => state.setJobDescription);
   const setBatchUploadResults = useAppStore((state) => state.setBatchUploadResults);
   const setCandidates = useAppStore((state) => state.setCandidates);
+  const resetAll = useAppStore((state) => state.resetAll);
 
   // Local state
   const [loadingStep, setLoadingStep] = useState(''); // '' | 'uploading' | 'analyzing'
@@ -83,7 +84,11 @@ export default function HomeScreen() {
       return;
     }
 
+    const filesToUpload = [...uploadedResumes];
+    const currentJd = jobDescription || '';
+
     setErrorMessage('');
+    resetAll();
     setLoadingStep('uploading');
 
     let batchId = null;
@@ -91,9 +96,9 @@ export default function HomeScreen() {
     // Step 1: Upload & Ingest Resumes
     try {
       const formData = new FormData();
-      formData.append('job_description', jobDescription || '');
+      formData.append('job_description', currentJd);
 
-      uploadedResumes.forEach((file) => {
+      filesToUpload.forEach((file) => {
         const fileUri =
           Platform.OS === 'ios' ? file.uri.replace('file://', '') : file.uri;
         formData.append('files', {
