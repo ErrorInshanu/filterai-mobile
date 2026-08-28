@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
@@ -10,276 +10,159 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Animated, { FadeInUp } from 'react-native-reanimated';
-import Swipeable from 'react-native-gesture-handler/Swipeable';
-import { Search, Star, Scale } from 'lucide-react-native';
+import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
+import { Search, Mail, FileText, ChevronRight, Users, Sparkles, Scale } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 
 import MonochromeBackground from '../components/landing/MonochromeBackground';
-
-const INITIAL_CANDIDATES = [
-  {
-    id: '1',
-    candidate_name: 'Sarah Chen',
-    match_score: 94,
-    summary: 'Strong full-stack background with 6 years in React and Node, led two production launches.',
-    shortlisted: false,
-  },
-  {
-    id: '2',
-    candidate_name: 'Marcus Johnson',
-    match_score: 88,
-    summary: 'Senior Backend Engineer with extensive Python, FastAPI, and PostgreSQL architecture experience.',
-    shortlisted: false,
-  },
-  {
-    id: '3',
-    candidate_name: 'Priya Patel',
-    match_score: 92,
-    summary: 'AI/ML specialist with 4 years building PyTorch NLP models and vector search systems.',
-    shortlisted: false,
-  },
-  {
-    id: '4',
-    candidate_name: 'David Kim',
-    match_score: 85,
-    summary: 'Frontend lead specializing in React Native, Expo, and performance optimization.',
-    shortlisted: false,
-  },
-  {
-    id: '5',
-    candidate_name: 'Elena Rostova',
-    match_score: 78,
-    summary: 'Full-stack developer with solid TypeScript and GraphQL experience across mobile and web.',
-    shortlisted: false,
-  },
-  {
-    id: '6',
-    candidate_name: 'Alex Rivera',
-    match_score: 74,
-    summary: 'Backend developer focused on Microservices, Docker, and REST API design.',
-    shortlisted: false,
-  },
-  {
-    id: '7',
-    candidate_name: 'Jordan Taylor',
-    match_score: 81,
-    summary: 'Product engineer with 5 years in React Native, Zustand state management, and Tailwind.',
-    shortlisted: false,
-  },
-  {
-    id: '8',
-    candidate_name: 'Samantha Wu',
-    match_score: 96,
-    summary: 'Principal Software Engineer with deep expertise in distributed systems and AI infrastructure.',
-    shortlisted: false,
-  },
-  {
-    id: '9',
-    candidate_name: 'Michael Brown',
-    match_score: 68,
-    summary: 'Junior developer with basic React experience, transitioning from frontend web to mobile.',
-    shortlisted: false,
-  },
-  {
-    id: '10',
-    candidate_name: 'Aisha Khan',
-    match_score: 89,
-    summary: 'Senior Mobile Architect with published iOS and Android apps using React Native.',
-    shortlisted: false,
-  },
-  {
-    id: '11',
-    candidate_name: 'Carlos Gomez',
-    match_score: 72,
-    summary: 'DevOps & Cloud Engineer with AWS, Kubernetes, and FastAPI deployment expertise.',
-    shortlisted: false,
-  },
-  {
-    id: '12',
-    candidate_name: 'Emily Watson',
-    match_score: 63,
-    summary: 'Data analyst with Python scripting background, looking for junior ML engineer roles.',
-    shortlisted: false,
-  },
-  {
-    id: '13',
-    candidate_name: 'Liam O\'Connor',
-    match_score: 86,
-    summary: 'Full-stack engineer with strong background in PyMuPDF, LangChain, and vector databases.',
-    shortlisted: false,
-  },
-  {
-    id: '14',
-    candidate_name: 'Nina Sharma',
-    match_score: 91,
-    summary: 'AI Application Developer with proven track record integrating LLM APIs and RAG pipelines.',
-    shortlisted: false,
-  },
-  {
-    id: '15',
-    candidate_name: 'James Wilson',
-    match_score: 65,
-    summary: 'QA Automation Engineer with Python testing experience, limited direct mobile development.',
-    shortlisted: false,
-  },
-  {
-    id: '16',
-    candidate_name: 'Maya Lin',
-    match_score: 97,
-    summary: 'Senior Staff Engineer with 8+ years across React Native, Node.js, and AI systems.',
-    shortlisted: false,
-  },
-  {
-    id: '17',
-    candidate_name: 'Vikram Malhotra',
-    match_score: 83,
-    summary: 'Mobile engineer with expertise in Expo Router, Reanimated, and native iOS modules.',
-    shortlisted: false,
-  },
-  {
-    id: '18',
-    candidate_name: 'Hannah Schmidt',
-    match_score: 67,
-    summary: 'Web developer proficient in HTML/CSS and JavaScript, beginner in React Native.',
-    shortlisted: false,
-  },
-  {
-    id: '19',
-    candidate_name: 'Rohan Gupta',
-    match_score: 90,
-    summary: 'Backend engineer specialized in Python, MongoDB, and high-concurrency API services.',
-    shortlisted: false,
-  },
-  {
-    id: '20',
-    candidate_name: 'Chloe Bennett',
-    match_score: 79,
-    summary: 'UI/UX focused Mobile Developer with strong React Native styling and component architecture skills.',
-    shortlisted: false,
-  },
-];
+import { useAppStore } from '../store/useAppStore';
 
 export default function CandidateListScreen() {
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
-  const [candidates, setCandidates] = useState(INITIAL_CANDIDATES);
-  const swipeableRefs = useRef({});
 
+  // Read candidates from Zustand store
+  const storeCandidates = useAppStore((state) => state.candidates);
+
+  // Defensively sort candidates by match_score descending
+  const sortedCandidates = useMemo(() => {
+    if (!Array.isArray(storeCandidates)) return [];
+    return [...storeCandidates].sort(
+      (a, b) => (b.match_score || 0) - (a.match_score || 0)
+    );
+  }, [storeCandidates]);
+
+  // Filter candidates by search query (name, email, or filename)
   const filteredCandidates = useMemo(() => {
-    if (!searchQuery.trim()) return candidates;
+    if (!searchQuery.trim()) return sortedCandidates;
     const query = searchQuery.toLowerCase().trim();
-    return candidates.filter((item) =>
-      item.candidate_name.toLowerCase().includes(query)
-    );
-  }, [searchQuery, candidates]);
+    return sortedCandidates.filter((item) => {
+      const name = (item.candidate_name || item.name || '').toLowerCase();
+      const email = (item.extracted_email || item.email || '').toLowerCase();
+      const fileName = (item.file_name || '').toLowerCase();
+      return name.includes(query) || email.includes(query) || fileName.includes(query);
+    });
+  }, [searchQuery, sortedCandidates]);
 
-  const toggleShortlist = (id) => {
-    setCandidates((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, shortlisted: !item.shortlisted } : item
-      )
-    );
-    if (swipeableRefs.current[id]) {
-      swipeableRefs.current[id].close();
-    }
-  };
-
-  const getScoreBadgeStyle = (score) => {
-    if (score >= 85) {
+  // Visual distinction for score ranges
+  const getScoreBadge = (score = 0) => {
+    if (score >= 70) {
       return {
         bg: 'rgba(16, 185, 129, 0.15)',
         text: '#10B981',
-        border: 'rgba(16, 185, 129, 0.3)',
+        border: 'rgba(16, 185, 129, 0.35)',
+        bar: '#10B981',
+        tier: 'High Match',
       };
-    } else if (score >= 70) {
+    } else if (score >= 40) {
       return {
-        bg: 'rgba(139, 92, 246, 0.15)',
-        text: '#A78BFA',
-        border: 'rgba(139, 92, 246, 0.3)',
+        bg: 'rgba(245, 158, 11, 0.15)',
+        text: '#F59E0B',
+        border: 'rgba(245, 158, 11, 0.35)',
+        bar: '#F59E0B',
+        tier: 'Moderate',
       };
     } else {
       return {
         bg: 'rgba(107, 114, 128, 0.15)',
         text: '#9CA3AF',
         border: 'rgba(107, 114, 128, 0.3)',
+        bar: '#6B7280',
+        tier: 'Low Match',
       };
     }
   };
 
-  const renderRightActions = (item) => {
-    return (
-      <TouchableOpacity
-        style={styles.rightActionBtn}
-        onPress={() => toggleShortlist(item.id)}
-        activeOpacity={0.8}
-      >
-        <Star
-          size={22}
-          color="#FFFFFF"
-          fill={item.shortlisted ? '#FFFFFF' : 'none'}
-        />
-        <Text style={styles.rightActionText}>
-          {item.shortlisted ? 'Unstar' : 'Shortlist'}
-        </Text>
-      </TouchableOpacity>
-    );
+  const handleCandidatePress = (candidate) => {
+    navigation.navigate('CandidateDetail', { candidate });
   };
 
   const renderCandidateCard = ({ item, index }) => {
-    const badge = getScoreBadgeStyle(item.match_score);
-    // Cap staggered delay to 450ms max
+    const rawScore = typeof item.match_score === 'number' ? item.match_score : 0;
+    const score = Math.min(100, Math.max(0, Math.round(rawScore)));
+    const badge = getScoreBadge(score);
+
+    // Fallback name: candidate_name -> name -> filename (without .pdf) -> "Candidate"
+    const displayName =
+      item.candidate_name ||
+      item.name ||
+      (item.file_name ? item.file_name.replace(/\.pdf$/i, '') : `Candidate #${index + 1}`);
+
+    const email = item.extracted_email || item.email;
     const animationDelay = Math.min(index * 60, 450);
 
     return (
-      <Animated.View entering={FadeInUp.delay(animationDelay).duration(500)}>
-        <Swipeable
-          ref={(ref) => (swipeableRefs.current[item.id] = ref)}
-          renderRightActions={() => renderRightActions(item)}
-          onSwipeableOpen={() => toggleShortlist(item.id)}
-          friction={2}
-          rightThreshold={40}
+      <Animated.View entering={FadeInUp.delay(animationDelay).duration(400)}>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => handleCandidatePress(item)}
+          style={styles.candidateCard}
         >
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={() => navigation.navigate('CandidateDetail', { candidate: item })}
-            style={[
-              styles.candidateCard,
-              item.shortlisted && styles.candidateCardShortlisted,
-            ]}
-          >
-            <View style={styles.cardHeaderRow}>
-              <View style={styles.nameRow}>
-                {item.shortlisted && (
-                  <View style={styles.starBadge}>
-                    <Star size={16} color="#A78BFA" fill="#A78BFA" />
-                  </View>
-                )}
-                <Text style={styles.candidateName}>{item.candidate_name}</Text>
-              </View>
-
-              {/* Match Score Pill Badge */}
-              <View
-                style={[
-                  styles.scorePill,
-                  {
-                    backgroundColor: badge.bg,
-                    borderColor: badge.border,
-                  },
-                ]}
-              >
-                <Text style={[styles.scoreText, { color: badge.text }]}>
-                  {item.match_score}% Match
-                </Text>
-              </View>
+          {/* Card Header: Candidate Name & Match Score Badge */}
+          <View style={styles.cardHeaderRow}>
+            <View style={styles.nameContainer}>
+              <Text style={styles.candidateName} numberOfLines={1}>
+                {displayName}
+              </Text>
+              {item.file_name ? (
+                <View style={styles.fileMetaRow}>
+                  <FileText size={12} color="#6B7280" style={{ marginRight: 4 }} />
+                  <Text style={styles.fileMetaText} numberOfLines={1}>
+                    {item.file_name}
+                  </Text>
+                </View>
+              ) : null}
             </View>
 
-            {/* Summary */}
-            <Text style={styles.summaryText} numberOfLines={2}>
-              {item.summary}
+            {/* Score Badge Pill */}
+            <View
+              style={[
+                styles.scorePill,
+                {
+                  backgroundColor: badge.bg,
+                  borderColor: badge.border,
+                },
+              ]}
+            >
+              <Sparkles size={12} color={badge.text} style={{ marginRight: 4 }} />
+              <Text style={[styles.scoreText, { color: badge.text }]}>
+                {score}%
+              </Text>
+            </View>
+          </View>
+
+          {/* Match Score Progress Bar */}
+          <View style={styles.progressContainer}>
+            <View style={styles.progressBarTrack}>
+              <View
+                style={[
+                  styles.progressBarFill,
+                  {
+                    width: `${score}%`,
+                    backgroundColor: badge.bar,
+                  },
+                ]}
+              />
+            </View>
+            <Text style={[styles.scoreTierText, { color: badge.text }]}>
+              {badge.tier}
             </Text>
-          </TouchableOpacity>
-        </Swipeable>
+          </View>
+
+          {/* Bottom Row: Extracted Email & Chevron */}
+          <View style={styles.cardFooterRow}>
+            <View style={styles.emailContainer}>
+              <Mail size={13} color={email ? '#A78BFA' : '#6B7280'} style={{ marginRight: 6 }} />
+              <Text style={email ? styles.emailText : styles.noEmailText} numberOfLines={1}>
+                {email || 'No email found'}
+              </Text>
+            </View>
+
+            <View style={styles.arrowSlot}>
+              <ChevronRight size={18} color="#6366F1" />
+            </View>
+          </View>
+        </TouchableOpacity>
       </Animated.View>
     );
   };
@@ -290,35 +173,76 @@ export default function CandidateListScreen() {
         <View>
           <Text style={styles.headerTitle}>Candidates</Text>
           <Text style={styles.headerSubtitle}>
-            {filteredCandidates.length} candidates ranked
+            {sortedCandidates.length} {sortedCandidates.length === 1 ? 'candidate' : 'candidates'} ranked
           </Text>
         </View>
 
-        <TouchableOpacity
-          style={styles.compareHeaderBtn}
-          activeOpacity={0.8}
-          onPress={() => navigation.navigate('Comparison')}
-        >
-          <Scale size={16} color="#C084FC" style={{ marginRight: 6 }} />
-          <Text style={styles.compareHeaderBtnText}>Compare (3)</Text>
-        </TouchableOpacity>
+        {sortedCandidates.length > 1 && (
+          <TouchableOpacity
+            style={styles.compareHeaderBtn}
+            activeOpacity={0.8}
+            onPress={() => navigation.navigate('Comparison')}
+          >
+            <Scale size={15} color="#C084FC" style={{ marginRight: 6 }} />
+            <Text style={styles.compareHeaderBtnText}>Compare</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Search Input Bar */}
-      <View style={styles.searchBar}>
-        <Search size={20} color="#9CA3AF" style={styles.searchIcon} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search candidates..."
-          placeholderTextColor="#6B7280"
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-      </View>
+      {sortedCandidates.length > 0 && (
+        <View style={styles.searchBar}>
+          <Search size={18} color="#9CA3AF" style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search candidates by name, email, or file..."
+            placeholderTextColor="#6B7280"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+        </View>
+      )}
     </View>
   );
+
+  const renderEmptyState = () => {
+    // If search had no matches
+    if (sortedCandidates.length > 0 && filteredCandidates.length === 0) {
+      return (
+        <Animated.View entering={FadeIn.duration(300)} style={styles.emptyContainer}>
+          <View style={styles.emptyIconBadge}>
+            <Search size={32} color="#6366F1" />
+          </View>
+          <Text style={styles.emptyTitle}>No matching candidates</Text>
+          <Text style={styles.emptySubtitle}>
+            No candidates match your search for &ldquo;{searchQuery}&rdquo;.
+          </Text>
+        </Animated.View>
+      );
+    }
+
+    // Default empty store state
+    return (
+      <Animated.View entering={FadeIn.duration(400)} style={styles.emptyContainer}>
+        <View style={styles.emptyIconBadge}>
+          <Users size={36} color="#6366F1" />
+        </View>
+        <Text style={styles.emptyTitle}>No candidates yet</Text>
+        <Text style={styles.emptySubtitle}>
+          Upload resumes from the Home screen to get started with AI candidate ranking.
+        </Text>
+        <TouchableOpacity
+          style={styles.uploadCtaBtn}
+          onPress={() => navigation.navigate('Home')}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.uploadCtaBtnText}>Go to Upload</Text>
+        </TouchableOpacity>
+      </Animated.View>
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -331,9 +255,10 @@ export default function CandidateListScreen() {
         >
           <FlatList
             data={filteredCandidates}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item, index) => item.candidate_id || item.id || `cand_${index}`}
             renderItem={renderCandidateCard}
             ListHeaderComponent={renderHeader}
+            ListEmptyComponent={renderEmptyState}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
@@ -359,6 +284,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingTop: 16,
     paddingBottom: 36,
+    flexGrow: 1,
   },
   headerContainer: {
     marginBottom: 20,
@@ -368,6 +294,18 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+  },
+  headerTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.5,
+  },
+  headerSubtitle: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#9CA3AF',
+    marginTop: 2,
   },
   compareHeaderBtn: {
     flexDirection: 'row',
@@ -384,24 +322,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#C084FC',
   },
-  headerTitle: {
-    fontSize: 30,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    letterSpacing: -0.5,
-  },
-  headerSubtitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#9CA3AF',
-    marginTop: 2,
-  },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(10, 14, 26, 0.85)',
     borderRadius: 14,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 12,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
@@ -411,69 +337,157 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    fontSize: 15,
+    fontSize: 14,
     color: '#FFFFFF',
   },
   candidateCard: {
     backgroundColor: 'rgba(15, 20, 36, 0.75)',
     borderRadius: 24,
-    padding: 18,
+    padding: 20,
     borderWidth: 1,
     borderColor: 'rgba(99, 102, 241, 0.25)',
-    marginBottom: 12,
-  },
-  candidateCardShortlisted: {
-    borderColor: 'rgba(167, 139, 250, 0.55)',
-    backgroundColor: 'rgba(22, 26, 52, 0.85)',
+    marginBottom: 14,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 4,
   },
   cardHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
+    alignItems: 'flex-start',
+    marginBottom: 12,
   },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  nameContainer: {
     flex: 1,
-    marginRight: 10,
-  },
-  starBadge: {
-    marginRight: 8,
+    marginRight: 12,
   },
   candidateName: {
     fontSize: 17,
     fontWeight: '700',
     color: '#FFFFFF',
+    marginBottom: 4,
+  },
+  fileMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  fileMetaText: {
+    fontSize: 12,
+    color: '#6B7280',
+    fontWeight: '500',
   },
   scorePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 5,
     borderRadius: 12,
     borderWidth: 1,
   },
   scoreText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  summaryText: {
     fontSize: 13,
-    color: '#9CA3AF',
-    lineHeight: 18,
+    fontWeight: '800',
   },
-  rightActionBtn: {
-    backgroundColor: '#6366F1',
-    justifyContent: 'center',
+  progressContainer: {
+    marginBottom: 14,
+  },
+  progressBarTrack: {
+    height: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginBottom: 6,
+  },
+  progressBarFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  scoreTierText: {
+    fontSize: 11,
+    fontWeight: '600',
+    textAlign: 'right',
+  },
+  cardFooterRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    width: 90,
-    borderRadius: 24,
-    marginBottom: 12,
-    marginLeft: 8,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
   },
-  rightActionText: {
+  emailContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 10,
+  },
+  emailText: {
+    fontSize: 13,
+    color: '#D1D5DB',
+    fontWeight: '500',
+  },
+  noEmailText: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontStyle: 'italic',
+  },
+  arrowSlot: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 24,
+  },
+  emptyIconBadge: {
+    width: 72,
+    height: 72,
+    borderRadius: 24,
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.3)',
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: '800',
     color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: 4,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  emptySubtitle: {
+    fontSize: 14,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 24,
+    maxWidth: 280,
+  },
+  uploadCtaBtn: {
+    backgroundColor: '#6366F1',
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 14,
+    alignItems: 'center',
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  uploadCtaBtnText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
 });
+
