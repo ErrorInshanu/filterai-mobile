@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   TouchableOpacity,
   ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -14,22 +15,24 @@ import {
   ArrowLeft,
   Star,
   Sparkles,
-  CheckCircle2,
-  AlertTriangle,
-  Lightbulb,
   Mail,
   ChevronRight,
   TrendingUp,
   XCircle,
   Briefcase,
-  MapPin,
-  Clock,
+  Lightbulb,
   Send,
   Scale,
-  Award,
+  FileText,
+  CheckCircle2,
+  AlertTriangle,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react-native';
 
 import MonochromeBackground from '../components/landing/MonochromeBackground';
+import { API_URL } from '../constants/api';
+import { useAppStore } from '../store/useAppStore';
 
 const TABS = [
   { id: 'overview', label: 'Overview' },
@@ -38,129 +41,152 @@ const TABS = [
   { id: 'actions', label: 'Actions' },
 ];
 
-const DEFAULT_CANDIDATE = {
-  id: '1',
-  candidate_name: 'Sarah Chen',
-  role: 'Senior Full-Stack Engineer',
-  match_score: 94,
-  shortlisted: true,
-  summary:
-    'Exceptional full-stack candidate with 6+ years experience architecting scalable React Native and Node.js microservices. Led two high-traffic production launches with strong engineering leadership and code quality discipline.',
-  breakdown: {
-    technical: 96,
-    experience: 92,
-    education: 90,
-  },
-  contact: {
-    email: 'sarah.chen@example.com',
-    location: 'San Francisco, CA (Remote)',
-    experience: '6+ Years',
-    education: 'B.S. Computer Science — UC Berkeley',
-  },
-  strengths: [
-    'React Native & Web Architecture',
-    'Node.js & High-Throughput APIs',
-    'Distributed Systems Design',
-    'Engineering Team Mentorship',
-    'Performance Optimization (60fps)',
-    'CI/CD & Automated Testing',
-  ],
-  skillGaps: [
-    {
-      skill: 'React Native & Mobile Performance',
-      candidateScore: 96,
-      requiredScore: 90,
-      status: 'exceeds',
-    },
-    {
-      skill: 'Node.js & Backend Architecture',
-      candidateScore: 92,
-      requiredScore: 85,
-      status: 'exceeds',
-    },
-    {
-      skill: 'Cloud Infra & AWS',
-      candidateScore: 86,
-      requiredScore: 80,
-      status: 'meets',
-    },
-    {
-      skill: 'FastAPI & Python Microservices',
-      candidateScore: 68,
-      requiredScore: 80,
-      status: 'gap',
-    },
-    {
-      skill: 'Vector DB & AI Embeddings (ChromaDB)',
-      candidateScore: 54,
-      requiredScore: 75,
-      status: 'gap',
-    },
-  ],
-  redFlags: [
-    'Limited hands-on production experience with Python FastAPI and ChromaDB pipelines.',
-    'Short tenure (<10 months) at first early-stage startup (2019).',
-  ],
-  interviewQuestions: [
-    {
-      id: 'q1',
-      category: 'System Architecture',
-      question:
-        'How would you optimize complex state management and re-rendering loops in a high-concurrency React Native dashboard?',
-      tip: 'Look for deep understanding of memoization, worklets, and Zustand architecture.',
-    },
-    {
-      id: 'q2',
-      category: 'AI Pipeline Integration (Skill Gap)',
-      question:
-        'FilterAI handles large-scale resume embeddings via ChromaDB. Given your Python gap, how would you design an async ingestion queue?',
-      tip: 'Gauge problem-solving ability and speed of adapting to new backend stacks.',
-    },
-    {
-      id: 'q3',
-      category: 'Leadership & Culture',
-      question:
-        'Describe a time you resolved a major technical disagreement regarding architectural trade-offs within your team.',
-      tip: 'Evaluate empathy, data-driven reasoning, and collaboration clarity.',
-    },
-  ],
-};
-
 export default function CandidateDetailScreen() {
   const navigation = useNavigation();
   const route = useRoute();
 
-  const candidate = {
-    ...DEFAULT_CANDIDATE,
-    ...(route.params?.candidate || {}),
-  };
+  // Read real candidate object passed from CandidateListScreen
+  const rawCandidate = route.params?.candidate || {};
+  const currentBatchId = useAppStore((state) => state.currentBatchId);
+
+  const rawScore = typeof rawCandidate.match_score === 'number' ? rawCandidate.match_score : 0;
+  const matchScore = Math.min(100, Math.max(0, Math.round(rawScore)));
+
+  const displayName =
+    rawCandidate.candidate_name ||
+    rawCandidate.name ||
+    (rawCandidate.file_name ? rawCandidate.file_name.replace(/\.pdf$/i, '') : 'Candidate');
+
+  const email = rawCandidate.extracted_email || rawCandidate.email || null;
+  const fileName = rawCandidate.file_name || null;
+  const candidateId = rawCandidate.candidate_id || rawCandidate.id || 'N/A';
+  const candidateStatus = rawCandidate.status || 'pending';
 
   const [activeTab, setActiveTab] = useState('overview');
-  const [isShortlisted, setIsShortlisted] = useState(candidate.shortlisted ?? false);
+  const [isShortlisted, setIsShortlisted] = useState(rawCandidate.shortlisted ?? false);
 
-  // SVG Circle calculations
+  // AI Insights State
+  const [insights, setInsights] = useState(null);
+  const [isLoadingInsights, setIsLoadingInsights] = useState(false);
+  const [insightsError, setInsightsError] = useState('');
+
+  // SVG Circular Gauge calculations
   const size = 110;
   const strokeWidth = 8;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const progressOffset =
-    circumference - (candidate.match_score / 100) * circumference;
+    circumference - (matchScore / 100) * circumference;
 
-  const getStatusBadge = (status) => {
-    switch (status) {
-      case 'exceeds':
-        return { label: 'Exceeds', bg: 'rgba(16, 185, 129, 0.15)', text: '#10B981', border: 'rgba(16, 185, 129, 0.3)' };
-      case 'meets':
-        return { label: 'Meets', bg: 'rgba(139, 92, 246, 0.15)', text: '#A78BFA', border: 'rgba(139, 92, 246, 0.3)' };
-      case 'gap':
-      default:
-        return { label: 'Skill Gap', bg: 'rgba(239, 68, 68, 0.15)', text: '#EF4444', border: 'rgba(239, 68, 68, 0.3)' };
+  const fetchInsights = useCallback(async () => {
+    setIsLoadingInsights(true);
+    setInsightsError('');
+    try {
+      const response = await fetch(`${API_URL}/api/candidate-insights`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          batch_id: rawCandidate.batch_id || currentBatchId || undefined,
+          candidate_id: rawCandidate.candidate_id || candidateId,
+          file_name: fileName || undefined,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        const errorDetail = data?.detail || 'Failed to generate candidate insights.';
+        setInsightsError(typeof errorDetail === 'string' ? errorDetail : 'AI analysis error');
+        setIsLoadingInsights(false);
+        return;
+      }
+
+      if (data && data.insights) {
+        setInsights(data.insights);
+      }
+      setIsLoadingInsights(false);
+    } catch (err) {
+      console.log('Candidate insights fetch error:', err);
+      setInsightsError('Unable to connect to AI analysis service. Please check your connection.');
+      setIsLoadingInsights(false);
     }
-  };
+  }, [rawCandidate.batch_id, rawCandidate.candidate_id, currentBatchId, candidateId, fileName]);
+
+  useEffect(() => {
+    fetchInsights();
+  }, [fetchInsights]);
+
+  const renderAILoader = (label = 'Generating AI analysis...') => (
+    <View style={styles.emptyPendingBox}>
+      <ActivityIndicator size="small" color="#8B5CF6" style={{ marginBottom: 12 }} />
+      <Text style={styles.emptyPendingTitle}>{label}</Text>
+      <Text style={styles.emptyPendingDesc}>
+        Evaluating candidate skills against job requirements using Groq LLaMA...
+      </Text>
+    </View>
+  );
+
+  const renderAIError = () => (
+    <View style={styles.emptyPendingBox}>
+      <View style={[styles.emptyIconCircle, styles.errorIconCircle]}>
+        <AlertCircle size={26} color="#EF4444" />
+      </View>
+      <Text style={[styles.emptyPendingTitle, { color: '#F87171' }]}>Analysis Unavailable</Text>
+      <Text style={styles.emptyPendingDesc}>{insightsError}</Text>
+      <TouchableOpacity
+        style={styles.retryBtn}
+        activeOpacity={0.8}
+        onPress={fetchInsights}
+      >
+        <RefreshCw size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+        <Text style={styles.retryBtnText}>Try Again</Text>
+      </TouchableOpacity>
+    </View>
+  );
 
   const renderOverviewTab = () => (
     <Animated.View entering={FadeIn.duration(400)}>
-      {/* AI Summary Card */}
+      {/* Real Candidate Information Card */}
+      <View style={styles.card}>
+        <Text style={[styles.cardTitle, { marginBottom: 16 }]}>Candidate Information</Text>
+
+        <View style={styles.infoRow}>
+          <Mail size={16} color="#9CA3AF" style={styles.infoIcon} />
+          <Text style={styles.infoLabel}>Email:</Text>
+          <Text style={email ? styles.infoValue : styles.infoValueMuted} numberOfLines={1}>
+            {email || 'No email found in resume'}
+          </Text>
+        </View>
+
+        {fileName ? (
+          <View style={styles.infoRow}>
+            <FileText size={16} color="#9CA3AF" style={styles.infoIcon} />
+            <Text style={styles.infoLabel}>Resume File:</Text>
+            <Text style={styles.infoValue} numberOfLines={1}>
+              {fileName}
+            </Text>
+          </View>
+        ) : null}
+
+        <View style={styles.infoRow}>
+          <Briefcase size={16} color="#9CA3AF" style={styles.infoIcon} />
+          <Text style={styles.infoLabel}>Candidate ID:</Text>
+          <Text style={styles.infoValue} numberOfLines={1}>
+            {candidateId}
+          </Text>
+        </View>
+
+        <View style={styles.infoRow}>
+          <Sparkles size={16} color="#9CA3AF" style={styles.infoIcon} />
+          <Text style={styles.infoLabel}>Match Score:</Text>
+          <Text style={[styles.infoValue, { color: '#C084FC', fontWeight: '800' }]}>
+            {matchScore}% Similarity Match
+          </Text>
+        </View>
+      </View>
+
+      {/* AI Executive Summary Card */}
       <View style={styles.card}>
         <View style={styles.cardHeaderRow}>
           <View style={styles.cardHeaderLeft}>
@@ -170,185 +196,145 @@ export default function CandidateDetailScreen() {
             <Text style={styles.cardTitle}>AI Executive Summary</Text>
           </View>
         </View>
-        <Text style={styles.summaryBody}>{candidate.summary}</Text>
+
+        {isLoadingInsights ? (
+          renderAILoader('Generating Executive Summary...')
+        ) : insightsError ? (
+          renderAIError()
+        ) : insights?.summary ? (
+          <Text style={styles.summaryBody}>{insights.summary}</Text>
+        ) : rawCandidate.summary ? (
+          <Text style={styles.summaryBody}>{rawCandidate.summary}</Text>
+        ) : (
+          <Text style={styles.summaryBody}>Candidate profile ready for screening review.</Text>
+        )}
       </View>
 
-      {/* Key Strengths */}
-      <View style={styles.card}>
-        <View style={styles.cardHeaderRow}>
-          <View style={styles.cardHeaderLeft}>
-            <View style={[styles.sparkleBadge, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
-              <CheckCircle2 size={16} color="#10B981" />
+      {/* Core Strengths Chips */}
+      {insights?.strengths && insights.strengths.length > 0 ? (
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <View style={styles.cardHeaderLeft}>
+              <View style={[styles.sparkleBadge, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
+                <CheckCircle2 size={16} color="#10B981" />
+              </View>
+              <Text style={styles.cardTitle}>Core Strengths & Highlights</Text>
             </View>
-            <Text style={styles.cardTitle}>Core Strengths & Highlights</Text>
+          </View>
+
+          <View style={styles.strengthsWrap}>
+            {insights.strengths.map((str, idx) => (
+              <View key={idx} style={styles.strengthPill}>
+                <CheckCircle2 size={14} color="#10B981" style={{ marginRight: 6 }} />
+                <Text style={styles.strengthText}>{str}</Text>
+              </View>
+            ))}
           </View>
         </View>
-
-        <View style={styles.strengthsWrap}>
-          {candidate.strengths.map((strength, index) => (
-            <View key={index} style={styles.strengthPill}>
-              <CheckCircle2 size={14} color="#10B981" style={{ marginRight: 6 }} />
-              <Text style={styles.strengthText}>{strength}</Text>
-            </View>
-          ))}
-        </View>
-      </View>
-
-      {/* Candidate Background & Details */}
-      <View style={styles.card}>
-        <Text style={[styles.cardTitle, { marginBottom: 14 }]}>Candidate Information</Text>
-
-        <View style={styles.infoRow}>
-          <Mail size={16} color="#9CA3AF" style={styles.infoIcon} />
-          <Text style={styles.infoLabel}>Email:</Text>
-          <Text style={styles.infoValue}>{candidate.contact?.email || 'candidate@example.com'}</Text>
-        </View>
-
-        <View style={styles.infoRow}>
-          <MapPin size={16} color="#9CA3AF" style={styles.infoIcon} />
-          <Text style={styles.infoLabel}>Location:</Text>
-          <Text style={styles.infoValue}>{candidate.contact?.location || 'San Francisco, CA'}</Text>
-        </View>
-
-        <View style={styles.infoRow}>
-          <Clock size={16} color="#9CA3AF" style={styles.infoIcon} />
-          <Text style={styles.infoLabel}>Experience:</Text>
-          <Text style={styles.infoValue}>{candidate.contact?.experience || '5+ Years'}</Text>
-        </View>
-
-        <View style={styles.infoRow}>
-          <Award size={16} color="#9CA3AF" style={styles.infoIcon} />
-          <Text style={styles.infoLabel}>Education:</Text>
-          <Text style={styles.infoValue}>{candidate.contact?.education || 'B.S. Computer Science'}</Text>
-        </View>
-      </View>
+      ) : null}
     </Animated.View>
   );
 
   const renderSkillGapTab = () => (
     <Animated.View entering={FadeIn.duration(400)}>
-      {/* Skill Breakdown Card */}
       <View style={styles.card}>
         <View style={styles.cardHeaderRow}>
           <View style={styles.cardHeaderLeft}>
             <View style={styles.sparkleBadge}>
               <TrendingUp size={16} color="#A78BFA" />
             </View>
-            <Text style={styles.cardTitle}>JD Requirements vs Resume</Text>
+            <Text style={styles.cardTitle}>Skill Gap Analysis</Text>
           </View>
         </View>
 
-        <View style={styles.skillsList}>
-          {candidate.skillGaps.map((item, index) => {
-            const badge = getStatusBadge(item.status);
-            return (
-              <View key={index} style={styles.skillItem}>
-                <View style={styles.skillHeaderRow}>
-                  <Text style={styles.skillName}>{item.skill}</Text>
-                  <View
-                    style={[
-                      styles.statusPill,
-                      { backgroundColor: badge.bg, borderColor: badge.border },
-                    ]}
-                  >
-                    <Text style={[styles.statusPillText, { color: badge.text }]}>
-                      {badge.label}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Progress Bar Container */}
-                <View style={styles.progressBarBg}>
-                  <View
-                    style={[
-                      styles.progressBarFill,
-                      {
-                        width: `${item.candidateScore}%`,
-                        backgroundColor:
-                          item.status === 'exceeds'
-                            ? '#10B981'
-                            : item.status === 'meets'
-                            ? '#8B5CF6'
-                            : '#EF4444',
-                      },
-                    ]}
-                  />
-                  {/* Required Target Marker */}
-                  <View
-                    style={[
-                      styles.targetMarker,
-                      { left: `${item.requiredScore}%` },
-                    ]}
-                  />
-                </View>
-
-                <View style={styles.scoreMetaRow}>
-                  <Text style={styles.scoreMetaText}>
-                    Candidate: <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>{item.candidateScore}%</Text>
-                  </Text>
-                  <Text style={styles.scoreMetaText}>
-                    Target: <Text style={{ color: '#9CA3AF', fontWeight: '600' }}>{item.requiredScore}%</Text>
-                  </Text>
-                </View>
+        {isLoadingInsights ? (
+          renderAILoader('Analyzing Skill Gaps...')
+        ) : insightsError ? (
+          renderAIError()
+        ) : insights?.skill_gaps && insights.skill_gaps.length > 0 ? (
+          <View style={styles.skillsList}>
+            {insights.skill_gaps.map((gap, idx) => (
+              <View key={idx} style={styles.gapItem}>
+                <TrendingUp size={16} color="#A78BFA" style={{ marginTop: 2, marginRight: 10 }} />
+                <Text style={styles.gapItemText}>{gap}</Text>
               </View>
-            );
-          })}
-        </View>
+            ))}
+          </View>
+        ) : (
+          <View style={styles.emptyPendingBox}>
+            <View style={styles.emptyIconCircle}>
+              <CheckCircle2 size={28} color="#10B981" />
+            </View>
+            <Text style={styles.emptyPendingTitle}>No Significant Gaps</Text>
+            <Text style={styles.emptyPendingDesc}>
+              Candidate demonstrates strong coverage across the key requirements outlined in the job description.
+            </Text>
+          </View>
+        )}
       </View>
 
-      {/* Red Flags / Risk Factors */}
-      <View style={[styles.card, styles.redFlagCard]}>
-        <View style={styles.cardHeaderRow}>
-          <View style={styles.cardHeaderLeft}>
-            <View style={styles.redFlagIconBadge}>
-              <AlertTriangle size={16} color="#EF4444" />
+      {/* Red Flags / Risk Factors Section (Shown only if present) */}
+      {insights?.red_flags && insights.red_flags.length > 0 ? (
+        <View style={[styles.card, styles.redFlagCard]}>
+          <View style={styles.cardHeaderRow}>
+            <View style={styles.cardHeaderLeft}>
+              <View style={styles.redFlagIconBadge}>
+                <AlertTriangle size={16} color="#EF4444" />
+              </View>
+              <Text style={[styles.cardTitle, { color: '#F87171' }]}>Identified Red Flags & Gaps</Text>
             </View>
-            <Text style={[styles.cardTitle, { color: '#F87171' }]}>Identified Red Flags & Gaps</Text>
+          </View>
+
+          <View style={styles.redFlagsList}>
+            {insights.red_flags.map((flag, idx) => (
+              <View key={idx} style={styles.redFlagItem}>
+                <View style={styles.redDot} />
+                <Text style={styles.redFlagText}>{flag}</Text>
+              </View>
+            ))}
           </View>
         </View>
-
-        <View style={styles.redFlagsList}>
-          {candidate.redFlags.map((flag, index) => (
-            <View key={index} style={styles.redFlagItem}>
-              <View style={styles.redDot} />
-              <Text style={styles.redFlagText}>{flag}</Text>
-            </View>
-          ))}
-        </View>
-      </View>
+      ) : null}
     </Animated.View>
   );
 
   const renderQuestionsTab = () => (
     <Animated.View entering={FadeIn.duration(400)}>
       <View style={styles.tabIntroRow}>
-        <Text style={styles.tabIntroTitle}>AI-Generated Interview Questions</Text>
+        <Text style={styles.tabIntroTitle}>AI Interview Questions</Text>
         <Text style={styles.tabIntroSubtitle}>
-          Tailored to verify candidate strengths and probe identified resume gaps.
+          Tailored to candidate background and targeted skill evaluation.
         </Text>
       </View>
 
-      {candidate.interviewQuestions.map((q, index) => (
-        <View key={q.id} style={styles.card}>
-          <View style={styles.questionCategoryRow}>
-            <View style={styles.categoryBadge}>
-              <Text style={styles.categoryBadgeText}>Question {index + 1} • {q.category}</Text>
+      {isLoadingInsights ? (
+        <View style={styles.card}>{renderAILoader('Drafting Interview Questions...')}</View>
+      ) : insightsError ? (
+        <View style={styles.card}>{renderAIError()}</View>
+      ) : insights?.interview_questions && insights.interview_questions.length > 0 ? (
+        insights.interview_questions.map((q, idx) => (
+          <View key={idx} style={styles.card}>
+            <View style={styles.questionCategoryRow}>
+              <View style={styles.categoryBadge}>
+                <Text style={styles.categoryBadgeText}>Question {idx + 1}</Text>
+              </View>
             </View>
+            <Text style={styles.questionText}>{`"${q}"`}</Text>
           </View>
-
-          <Text style={styles.questionText}>
-            {`"${q.question}"`}
-          </Text>
-
-          <View style={styles.tipBox}>
-            <Lightbulb size={16} color="#F59E0B" style={{ marginTop: 2, marginRight: 8 }} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.tipTitle}>Recruiter Evaluation Tip:</Text>
-              <Text style={styles.tipText}>{q.tip}</Text>
+        ))
+      ) : (
+        <View style={styles.card}>
+          <View style={styles.emptyPendingBox}>
+            <View style={[styles.emptyIconCircle, { backgroundColor: 'rgba(245, 158, 11, 0.15)', borderColor: 'rgba(245, 158, 11, 0.3)' }]}>
+              <Lightbulb size={28} color="#F59E0B" />
             </View>
+            <Text style={styles.emptyPendingTitle}>Questions Ready Upon Evaluation</Text>
+            <Text style={styles.emptyPendingDesc}>
+              Interview questions tailored to this candidate will appear once AI evaluation completes.
+            </Text>
           </View>
         </View>
-      ))}
+      )}
     </Animated.View>
   );
 
@@ -357,7 +343,7 @@ export default function CandidateDetailScreen() {
       <View style={styles.tabIntroRow}>
         <Text style={styles.tabIntroTitle}>Screening Actions</Text>
         <Text style={styles.tabIntroSubtitle}>
-          Quickly progress this candidate to the next hiring stage.
+          Progress this candidate through the hiring workflow.
         </Text>
       </View>
 
@@ -366,16 +352,16 @@ export default function CandidateDetailScreen() {
         style={styles.actionCard}
         activeOpacity={0.8}
         onPress={() => {
-          navigation.navigate('OfferLetter', { candidate, initialTab: 'offer' });
+          navigation.navigate('OfferLetter', { candidate: rawCandidate, initialTab: 'offer' });
         }}
       >
         <View style={[styles.actionIconBadge, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
           <Send size={22} color="#10B981" />
         </View>
         <View style={styles.actionCardContent}>
-          <Text style={styles.actionCardTitle}>Draft AI Offer Letter</Text>
+          <Text style={styles.actionCardTitle}>Draft Offer Letter</Text>
           <Text style={styles.actionCardDesc}>
-            Generate an offer letter using Groq LLaMA 3.3 and send via SMTP.
+            Generate an offer letter for this candidate.
           </Text>
         </View>
         <ChevronRight size={20} color="#6B7280" />
@@ -393,9 +379,9 @@ export default function CandidateDetailScreen() {
           <Scale size={22} color="#8B5CF6" />
         </View>
         <View style={styles.actionCardContent}>
-          <Text style={styles.actionCardTitle}>Add to Comparison Matrix</Text>
+          <Text style={styles.actionCardTitle}>Compare with Others</Text>
           <Text style={styles.actionCardDesc}>
-            Compare side-by-side with top candidates for this role.
+            View side-by-side against other ranked candidates.
           </Text>
         </View>
         <ChevronRight size={20} color="#6B7280" />
@@ -406,7 +392,7 @@ export default function CandidateDetailScreen() {
         style={styles.actionCard}
         activeOpacity={0.8}
         onPress={() => {
-          navigation.navigate('Rejection', { candidate, initialTab: 'rejection' });
+          navigation.navigate('Rejection', { candidate: rawCandidate, initialTab: 'rejection' });
         }}
       >
         <View style={[styles.actionIconBadge, { backgroundColor: 'rgba(239, 68, 68, 0.15)' }]}>
@@ -415,7 +401,7 @@ export default function CandidateDetailScreen() {
         <View style={styles.actionCardContent}>
           <Text style={styles.actionCardTitle}>Send Rejection Email</Text>
           <Text style={styles.actionCardDesc}>
-            Polite, feedback-rich rejection note generated automatically.
+            Send a polite rejection message.
           </Text>
         </View>
         <ChevronRight size={20} color="#6B7280" />
@@ -428,7 +414,7 @@ export default function CandidateDetailScreen() {
       <MonochromeBackground />
 
       <SafeAreaView style={styles.safeArea}>
-        {/* Top App Bar */}
+        {/* Top App Bar with Working Back Navigation */}
         <View style={styles.topBar}>
           <TouchableOpacity
             style={styles.iconButton}
@@ -464,13 +450,17 @@ export default function CandidateDetailScreen() {
               <View style={styles.heroInfo}>
                 <View style={styles.roleBadge}>
                   <Briefcase size={12} color="#A78BFA" style={{ marginRight: 5 }} />
-                  <Text style={styles.roleBadgeText}>Applicant</Text>
+                  <Text style={styles.roleBadgeText}>Candidate Profile</Text>
                 </View>
-                <Text style={styles.heroName}>{candidate.candidate_name}</Text>
-                <Text style={styles.heroRole}>{candidate.role || 'Full-Stack Engineer'}</Text>
-                <Text style={styles.heroMeta}>
-                  {(candidate.contact && candidate.contact.location) || 'San Francisco, CA'} • {(candidate.contact && candidate.contact.experience) || '5+ Years'}
-                </Text>
+                <Text style={styles.heroName} numberOfLines={2}>{displayName}</Text>
+                {fileName ? (
+                  <View style={styles.fileRow}>
+                    <FileText size={13} color="#9CA3AF" style={{ marginRight: 4 }} />
+                    <Text style={styles.heroFileText} numberOfLines={1}>
+                      {fileName}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
 
               {/* Circular Match Gauge */}
@@ -508,27 +498,27 @@ export default function CandidateDetailScreen() {
                   />
                 </Svg>
                 <View style={styles.gaugeCenterText}>
-                  <Text style={styles.gaugeScoreText}>{candidate.match_score}%</Text>
+                  <Text style={styles.gaugeScoreText}>{matchScore}%</Text>
                   <Text style={styles.gaugeLabel}>MATCH</Text>
                 </View>
               </View>
             </View>
 
-            {/* Match Categories 3-Col Bar */}
+            {/* Candidate Metadata 3-Col Bar */}
             <View style={styles.breakdownRow}>
               <View style={styles.breakdownItem}>
-                <Text style={styles.breakdownVal}>{(candidate.breakdown && candidate.breakdown.technical) || 96}%</Text>
-                <Text style={styles.breakdownLbl}>Technical</Text>
+                <Text style={styles.breakdownVal}>{matchScore}%</Text>
+                <Text style={styles.breakdownLbl}>Match Score</Text>
               </View>
               <View style={styles.breakdownDivider} />
               <View style={styles.breakdownItem}>
-                <Text style={styles.breakdownVal}>{(candidate.breakdown && candidate.breakdown.experience) || 92}%</Text>
-                <Text style={styles.breakdownLbl}>Experience</Text>
+                <Text style={styles.breakdownVal}>{candidateStatus.toUpperCase()}</Text>
+                <Text style={styles.breakdownLbl}>Status</Text>
               </View>
               <View style={styles.breakdownDivider} />
               <View style={styles.breakdownItem}>
-                <Text style={styles.breakdownVal}>{(candidate.breakdown && candidate.breakdown.education) || 90}%</Text>
-                <Text style={styles.breakdownLbl}>Education</Text>
+                <Text style={styles.breakdownVal}>PDF</Text>
+                <Text style={styles.breakdownLbl}>Format</Text>
               </View>
             </View>
           </Animated.View>
@@ -642,17 +632,18 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#FFFFFF',
     letterSpacing: -0.5,
-    marginBottom: 2,
+    marginBottom: 4,
   },
-  heroRole: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#A78BFA',
-    marginBottom: 6,
+  fileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
   },
-  heroMeta: {
-    fontSize: 12,
+  heroFileText: {
+    fontSize: 13,
     color: '#9CA3AF',
+    fontWeight: '500',
+    flex: 1,
   },
   gaugeContainer: {
     width: 110,
@@ -695,7 +686,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   breakdownVal: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '800',
     color: '#FFFFFF',
     marginBottom: 2,
@@ -800,78 +791,28 @@ const styles = StyleSheet.create({
     color: '#E5E7EB',
     fontWeight: '500',
   },
-  infoRow: {
+  skillsList: {
+    gap: 12,
+  },
+  gapItem: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
+    alignItems: 'flex-start',
+    backgroundColor: 'rgba(139, 92, 246, 0.08)',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(139, 92, 246, 0.2)',
   },
-  infoIcon: {
-    marginRight: 10,
-  },
-  infoLabel: {
+  gapItemText: {
     fontSize: 13,
-    color: '#9CA3AF',
-    width: 90,
-  },
-  infoValue: {
-    fontSize: 13,
-    color: '#FFFFFF',
-    fontWeight: '600',
+    color: '#E5E7EB',
+    lineHeight: 18,
     flex: 1,
   },
-  skillsList: {
-    gap: 16,
-  },
-  skillItem: {
-    gap: 6,
-  },
-  skillHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  skillName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  statusPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    borderWidth: 1,
-  },
-  statusPillText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  progressBarBg: {
-    height: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 4,
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  progressBarFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  targetMarker: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: 2,
-    backgroundColor: '#FFFFFF',
-    opacity: 0.6,
-  },
-  scoreMetaRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 2,
-  },
-  scoreMetaText: {
-    fontSize: 11,
-    color: '#6B7280',
+  noGapsText: {
+    fontSize: 13,
+    color: '#9CA3AF',
+    fontStyle: 'italic',
   },
   redFlagCard: {
     borderColor: 'rgba(239, 68, 68, 0.35)',
@@ -907,20 +848,6 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     flex: 1,
   },
-  tabIntroRow: {
-    marginBottom: 16,
-  },
-  tabIntroTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    marginBottom: 4,
-  },
-  tabIntroSubtitle: {
-    fontSize: 13,
-    color: '#9CA3AF',
-    lineHeight: 18,
-  },
   questionCategoryRow: {
     marginBottom: 8,
   },
@@ -937,30 +864,99 @@ const styles = StyleSheet.create({
     color: '#C084FC',
   },
   questionText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
     color: '#FFFFFF',
-    lineHeight: 22,
+    lineHeight: 21,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginBottom: 12,
   },
-  tipBox: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(245, 158, 11, 0.1)',
-    borderRadius: 12,
-    padding: 12,
+  infoIcon: {
+    marginRight: 10,
+  },
+  infoLabel: {
+    fontSize: 13,
+    color: '#9CA3AF',
+    width: 100,
+  },
+  infoValue: {
+    fontSize: 13,
+    color: '#FFFFFF',
+    fontWeight: '600',
+    flex: 1,
+  },
+  infoValueMuted: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontStyle: 'italic',
+    flex: 1,
+  },
+  emptyPendingBox: {
+    paddingVertical: 24,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyIconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 20,
+    backgroundColor: 'rgba(139, 92, 246, 0.15)',
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.25)',
+    borderColor: 'rgba(139, 92, 246, 0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
   },
-  tipTitle: {
-    fontSize: 12,
+  errorIconCircle: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+  },
+  emptyPendingTitle: {
+    fontSize: 15,
     fontWeight: '700',
-    color: '#F59E0B',
-    marginBottom: 2,
+    color: '#FFFFFF',
+    marginBottom: 6,
+    textAlign: 'center',
   },
-  tipText: {
-    fontSize: 12,
-    color: '#D1D5DB',
-    lineHeight: 17,
+  emptyPendingDesc: {
+    fontSize: 13,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    lineHeight: 19,
+    maxWidth: 300,
+    marginBottom: 12,
+  },
+  retryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#6366F1',
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 10,
+    marginTop: 4,
+  },
+  retryBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  tabIntroRow: {
+    marginBottom: 16,
+  },
+  tabIntroTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    marginBottom: 4,
+  },
+  tabIntroSubtitle: {
+    fontSize: 13,
+    color: '#9CA3AF',
+    lineHeight: 18,
   },
   actionCard: {
     flexDirection: 'row',
@@ -995,3 +991,5 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
 });
+
+

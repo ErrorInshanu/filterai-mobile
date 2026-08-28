@@ -48,3 +48,8 @@ class LoginRequest(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     batch_id: str
+
+class CandidateInsightsRequest(BaseModel):
+    batch_id: Optional[str] = None
+    candidate_id: Optional[str] = None
+    file_name: Optional[str] = None
