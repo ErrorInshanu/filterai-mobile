@@ -53,3 +53,19 @@ class CandidateInsightsRequest(BaseModel):
     batch_id: Optional[str] = None
     candidate_id: Optional[str] = None
     file_name: Optional[str] = None
+
+class GenerateLetterRequest(BaseModel):
+    batch_id: Optional[str] = None
+    candidate_id: Optional[str] = None
+    file_name: Optional[str] = None
+    letter_type: str = "offer"
+
+class SendLetterRequest(BaseModel):
+    batch_id: Optional[str] = None
+    candidate_id: Optional[str] = None
+    file_name: Optional[str] = None
+    letter_type: str = "offer"
+    to_email: str
+    subject: str
+    body: str
+

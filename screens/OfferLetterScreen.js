@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,10 +8,11 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import {
   ArrowLeft,
   Sparkles,
@@ -20,97 +21,213 @@ import {
   CheckCircle2,
   Mail,
   User,
-  Clock,
-  Briefcase,
+  AlertCircle,
+  RefreshCw,
+  Send,
+  ShieldCheck,
 } from 'lucide-react-native';
 
 import MonochromeBackground from '../components/landing/MonochromeBackground';
-import MonochromeGetStartedButton from '../components/landing/MonochromeGetStartedButton';
-
-const DEFAULT_OFFER_TEMPLATE = `Dear Sarah,
-
-We are thrilled to offer you the position of Senior Full-Stack Engineer at FilterAI! 
-
-After thoroughly reviewing your technical background, leadership in production React Native releases, and strong system architecture skills, our team is confident you will make an exceptional impact on our engineering organization.
-
-Offer Details:
-• Role: Senior Full-Stack Engineer
-• Department: Mobile & Core Platform
-• Starting Base Salary: $165,000 / year + Equity Options
-• Start Date: September 15, 2026
-• Location: Remote (San Francisco HQ access)
-
-We look forward to building the next generation of AI recruitment tools together. Please review and sign the attached agreement by Friday.
-
-Warm regards,
-Alex Morgan — Lead Recruiter, FilterAI`;
-
-const DEFAULT_REJECTION_TEMPLATE = `Dear Sarah,
-
-Thank you for taking the time to speak with our engineering team regarding the Senior Full-Stack Engineer role at FilterAI.
-
-We were truly impressed by your extensive experience in mobile engineering and distributed Node.js systems. However, for this particular opening, we have decided to advance candidates whose recent hands-on background more closely aligns with our core Python FastAPI and ChromaDB vector search requirements.
-
-We will keep your resume in our active talent pool for upcoming architecture and full-stack roles that match your strengths. We wish you the very best in your job search!
-
-Warm regards,
-Alex Morgan — Lead Recruiter, FilterAI`;
-
-const RECENT_SENDS = [
-  {
-    id: '1',
-    candidate_name: 'David Kim',
-    type: 'Offer Letter',
-    typeColor: '#10B981',
-    time: '2 hours ago',
-    status: 'Delivered',
-  },
-  {
-    id: '2',
-    candidate_name: 'Elena Rostova',
-    type: 'Rejection Note',
-    typeColor: '#EF4444',
-    time: 'Yesterday',
-    status: 'Delivered',
-  },
-  {
-    id: '3',
-    candidate_name: 'Michael Brown',
-    type: 'Rejection Note',
-    typeColor: '#EF4444',
-    time: '2 days ago',
-    status: 'Delivered',
-  },
-];
+import { API_URL } from '../constants/api';
+import { useAppStore } from '../store/useAppStore';
 
 export default function OfferLetterScreen() {
   const navigation = useNavigation();
   const route = useRoute();
 
-  const candidate = route.params?.candidate || {
-    id: '1',
-    candidate_name: 'Sarah Chen',
-    role: 'Senior Full-Stack Engineer',
-    match_score: 94,
-    contact: { email: 'sarah.chen@example.com' },
-  };
+  const currentBatchId = useAppStore((state) => state.currentBatchId);
+  const rawCandidate = route.params?.candidate || {};
 
-  const initialTab = route.params?.initialTab || 'offer';
+  const displayName =
+    rawCandidate.candidate_name ||
+    rawCandidate.name ||
+    (rawCandidate.file_name ? rawCandidate.file_name.replace(/\.pdf$/i, '') : 'Candidate');
+
+  const recipientEmail =
+    rawCandidate.extracted_email ||
+    rawCandidate.email ||
+    rawCandidate.contact?.email ||
+    '';
+
+  const fileName = rawCandidate.file_name || '';
+  const candidateId = rawCandidate.candidate_id || rawCandidate.id || '';
+  const batchId = rawCandidate.batch_id || currentBatchId || '';
+  const matchScore = typeof rawCandidate.match_score === 'number' ? rawCandidate.match_score : 0;
+
+  const initialTab = route.params?.initialTab === 'rejection' ? 'rejection' : 'offer';
   const [activeTab, setActiveTab] = useState(initialTab); // 'offer' | 'rejection'
+
+  // Letter state
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
   const [isEditing, setIsEditing] = useState(false);
-  const [offerText, setOfferText] = useState(DEFAULT_OFFER_TEMPLATE);
-  const [rejectionText, setRejectionText] = useState(DEFAULT_REJECTION_TEMPLATE);
-  const [isSent, setIsSent] = useState(false);
+
+  // Status & loading states
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+  const [alreadySentInfo, setAlreadySentInfo] = useState(null);
 
   const isOffer = activeTab === 'offer';
-  const currentLetterText = isOffer ? offerText : rejectionText;
-  const setLetterText = isOffer ? setOfferText : setRejectionText;
 
-  const handleSend = () => {
-    setIsSent(true);
-    setTimeout(() => {
-      setIsSent(false);
-    }, 4000);
+  // 1. Generate Letter Preview via Groq
+  const generateLetter = useCallback(
+    async (typeToGenerate) => {
+      if (alreadySentInfo?.sent) return;
+
+      setIsGenerating(true);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      try {
+        const response = await fetch(`${API_URL}/api/generate-letter`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            batch_id: batchId || undefined,
+            candidate_id: candidateId || undefined,
+            file_name: fileName || undefined,
+            letter_type: typeToGenerate,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          const detail = data?.detail || 'Failed to generate letter preview.';
+          if (typeof detail === 'string' && detail.toLowerCase().includes('already been sent')) {
+            setAlreadySentInfo({
+              sent: true,
+              type: typeToGenerate,
+              recipient: recipientEmail,
+            });
+          } else {
+            setErrorMessage(typeof detail === 'string' ? detail : 'Generation error');
+          }
+          setIsGenerating(false);
+          return;
+        }
+
+        if (data.subject) setSubject(data.subject);
+        if (data.body) setBody(data.body);
+        setIsGenerating(false);
+      } catch (err) {
+        console.log('Generate letter fetch error:', err);
+        setErrorMessage('Unable to connect to AI letter generation service.');
+        setIsGenerating(false);
+      }
+    },
+    [alreadySentInfo?.sent, batchId, candidateId, fileName, recipientEmail]
+  );
+
+  // 2. Check on mount if email was already sent
+  const checkInitialStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/candidate-email-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          batch_id: batchId || undefined,
+          candidate_id: candidateId || undefined,
+          file_name: fileName || undefined,
+        }),
+      });
+
+      const data = await response.json();
+      if (response.ok && data?.email_status === 'sent') {
+        setAlreadySentInfo({
+          sent: true,
+          sent_at: data.email_sent_at,
+          type: data.email_type_sent,
+          recipient: data.to_email || recipientEmail,
+          subject: data.subject,
+        });
+        if (data.subject) setSubject(data.subject);
+      } else {
+        generateLetter(initialTab);
+      }
+    } catch (err) {
+      console.log('Error checking email status:', err);
+      generateLetter(initialTab);
+    }
+  }, [batchId, candidateId, fileName, initialTab, recipientEmail, generateLetter]);
+
+  useEffect(() => {
+    checkInitialStatus();
+  }, [checkInitialStatus]);
+
+  // Handle Tab Switch
+  const handleTabSwitch = (newTab) => {
+    if (newTab === activeTab || alreadySentInfo?.sent) return;
+    setActiveTab(newTab);
+    setIsEditing(false);
+    generateLetter(newTab);
+  };
+
+  // 3. Send Letter via Gmail SMTP
+  const handleSend = async () => {
+    if (isSending || alreadySentInfo?.sent) return;
+
+    if (!recipientEmail) {
+      setErrorMessage('Candidate has no extracted email address. Cannot dispatch email.');
+      return;
+    }
+
+    if (!body.trim() || !subject.trim()) {
+      setErrorMessage('Subject and letter body cannot be empty.');
+      return;
+    }
+
+    setIsSending(true);
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    try {
+      const response = await fetch(`${API_URL}/api/send-letter`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          batch_id: batchId || undefined,
+          candidate_id: candidateId || undefined,
+          file_name: fileName || undefined,
+          letter_type: activeTab,
+          to_email: recipientEmail,
+          subject: subject.trim(),
+          body: body.trim(),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        const detail = data?.detail || 'Failed to dispatch email.';
+        setErrorMessage(typeof detail === 'string' ? detail : 'Email sending failed');
+        setIsSending(false);
+        return;
+      }
+
+      setAlreadySentInfo({
+        sent: true,
+        sent_at: data.sent_at,
+        type: data.letter_type || activeTab,
+        recipient: data.recipient || recipientEmail,
+        subject: subject.trim(),
+      });
+      setSuccessMessage(data.message || 'Email successfully dispatched via Gmail SMTP!');
+      setIsSending(false);
+    } catch (err) {
+      console.log('Send letter fetch error:', err);
+      setErrorMessage('Network connection error while sending email.');
+      setIsSending(false);
+    }
+  };
+
+  const getInitials = (name) => {
+    if (!name) return 'CA';
+    const parts = name.trim().split(' ');
+    if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+    return name.slice(0, 2).toUpperCase();
   };
 
   return (
@@ -150,12 +267,11 @@ export default function OfferLetterScreen() {
                 style={[
                   styles.tabButton,
                   isOffer && styles.tabButtonActiveOffer,
+                  alreadySentInfo?.sent && styles.tabButtonDisabled,
                 ]}
-                onPress={() => {
-                  setActiveTab('offer');
-                  setIsEditing(false);
-                }}
+                onPress={() => handleTabSwitch('offer')}
                 activeOpacity={0.8}
+                disabled={alreadySentInfo?.sent}
               >
                 <Text
                   style={[
@@ -171,12 +287,11 @@ export default function OfferLetterScreen() {
                 style={[
                   styles.tabButton,
                   !isOffer && styles.tabButtonActiveRejection,
+                  alreadySentInfo?.sent && styles.tabButtonDisabled,
                 ]}
-                onPress={() => {
-                  setActiveTab('rejection');
-                  setIsEditing(false);
-                }}
+                onPress={() => handleTabSwitch('rejection')}
                 activeOpacity={0.8}
+                disabled={alreadySentInfo?.sent}
               >
                 <Text
                   style={[
@@ -193,30 +308,45 @@ export default function OfferLetterScreen() {
             <Animated.View entering={FadeInDown.delay(100).duration(600)} style={styles.recipientCard}>
               <View style={styles.recipientLeft}>
                 <View style={styles.recipientAvatar}>
-                  <Text style={styles.recipientInitials}>
-                    {candidate.candidate_name
-                      .split(' ')
-                      .map((n) => n[0])
-                      .join('')}
-                  </Text>
+                  <Text style={styles.recipientInitials}>{getInitials(displayName)}</Text>
                 </View>
                 <View style={styles.recipientMeta}>
-                  <Text style={styles.recipientName}>{candidate.candidate_name}</Text>
+                  <Text style={styles.recipientName} numberOfLines={1}>{displayName}</Text>
                   <View style={styles.emailRow}>
                     <Mail size={12} color="#9CA3AF" style={{ marginRight: 4 }} />
-                    <Text style={styles.recipientEmail}>
-                      {candidate.contact?.email || 'sarah.chen@example.com'}
+                    <Text style={recipientEmail ? styles.recipientEmail : styles.recipientEmailMissing} numberOfLines={1}>
+                      {recipientEmail || 'No email found in resume'}
                     </Text>
                   </View>
                 </View>
               </View>
 
               <View style={styles.matchBadge}>
-                <Text style={styles.matchBadgeText}>{candidate.match_score || 94}% Match</Text>
+                <Text style={styles.matchBadgeText}>{Math.round(matchScore)}% Match</Text>
               </View>
             </Animated.View>
 
-            {/* AI Generator Header Card & Letter Box */}
+            {/* Hard Block Banner: If already sent */}
+            {alreadySentInfo?.sent && (
+              <Animated.View entering={FadeInDown.duration(400)} style={styles.alreadySentCard}>
+                <View style={styles.alreadySentHeader}>
+                  <ShieldCheck size={22} color="#10B981" style={{ marginRight: 8 }} />
+                  <Text style={styles.alreadySentTitle}>Email Already Dispatched</Text>
+                </View>
+                <Text style={styles.alreadySentDesc}>
+                  An {alreadySentInfo.type || 'email'} letter was successfully dispatched to{' '}
+                  <Text style={{ fontWeight: '700', color: '#FFFFFF' }}>
+                    {alreadySentInfo.recipient || recipientEmail}
+                  </Text>
+                  {alreadySentInfo.sent_at
+                    ? ` on ${new Date(alreadySentInfo.sent_at).toLocaleDateString()}`
+                    : ''}
+                  . Duplicate sends are permanently blocked to protect candidate communication integrity.
+                </Text>
+              </Animated.View>
+            )}
+
+            {/* AI Generator & Editable Letter Box */}
             <Animated.View entering={FadeInDown.delay(200).duration(600)} style={styles.letterCard}>
               <View style={styles.letterHeader}>
                 <View style={styles.aiBadge}>
@@ -224,97 +354,146 @@ export default function OfferLetterScreen() {
                   <Text style={styles.aiBadgeText}>Groq LLaMA 3.3 70B</Text>
                 </View>
 
-                {/* Edit / Preview Toggle Button */}
-                <TouchableOpacity
-                  style={styles.editToggleBtn}
-                  activeOpacity={0.8}
-                  onPress={() => setIsEditing(!isEditing)}
-                >
-                  {isEditing ? (
-                    <>
-                      <Eye size={14} color="#10B981" style={{ marginRight: 5 }} />
-                      <Text style={[styles.editToggleText, { color: '#10B981' }]}>Preview</Text>
-                    </>
-                  ) : (
-                    <>
-                      <Edit3 size={14} color="#A78BFA" style={{ marginRight: 5 }} />
-                      <Text style={styles.editToggleText}>Edit Template</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
+                {!alreadySentInfo?.sent && (
+                  <View style={styles.headerActionRow}>
+                    {/* Regenerate Button */}
+                    <TouchableOpacity
+                      style={styles.regenerateBtn}
+                      activeOpacity={0.8}
+                      onPress={() => generateLetter(activeTab)}
+                      disabled={isGenerating}
+                    >
+                      <RefreshCw size={13} color="#A78BFA" style={{ marginRight: 4 }} />
+                      <Text style={styles.regenerateBtnText}>Regenerate</Text>
+                    </TouchableOpacity>
+
+                    {/* Edit / Preview Toggle */}
+                    <TouchableOpacity
+                      style={styles.editToggleBtn}
+                      activeOpacity={0.8}
+                      onPress={() => setIsEditing(!isEditing)}
+                    >
+                      {isEditing ? (
+                        <>
+                          <Eye size={13} color="#10B981" style={{ marginRight: 4 }} />
+                          <Text style={[styles.editToggleText, { color: '#10B981' }]}>Preview</Text>
+                        </>
+                      ) : (
+                        <>
+                          <Edit3 size={13} color="#A78BFA" style={{ marginRight: 4 }} />
+                          <Text style={styles.editToggleText}>Edit</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                )}
               </View>
 
-              {/* Letter Content: Text or TextInput */}
-              {isEditing ? (
+              {/* Subject Input */}
+              <View style={styles.subjectContainer}>
+                <Text style={styles.subjectLabel}>Subject:</Text>
+                {isEditing ? (
+                  <TextInput
+                    style={styles.subjectInput}
+                    value={subject}
+                    onChangeText={setSubject}
+                    placeholder="Enter email subject..."
+                    placeholderTextColor="#6B7280"
+                  />
+                ) : (
+                  <Text style={styles.subjectText} numberOfLines={2}>
+                    {subject || (isGenerating ? 'Generating subject...' : 'No subject')}
+                  </Text>
+                )}
+              </View>
+
+              {/* Letter Body */}
+              {isGenerating ? (
+                <View style={styles.loadingBox}>
+                  <ActivityIndicator size="small" color="#8B5CF6" style={{ marginBottom: 12 }} />
+                  <Text style={styles.loadingTitle}>
+                    Drafting {isOffer ? 'Job Offer' : 'Rejection Letter'} with AI...
+                  </Text>
+                  <Text style={styles.loadingSubtext}>
+                    Personalizing communication based on candidate resume and job requirements.
+                  </Text>
+                </View>
+              ) : isEditing ? (
                 <TextInput
                   style={styles.editableInput}
-                  value={currentLetterText}
-                  onChangeText={setLetterText}
+                  value={body}
+                  onChangeText={setBody}
                   multiline
                   textAlignVertical="top"
+                  placeholder="Letter content..."
                   placeholderTextColor="#6B7280"
                 />
               ) : (
                 <View style={styles.letterBodyContainer}>
-                  <Text style={styles.letterBodyText}>{currentLetterText}</Text>
+                  <Text style={styles.letterBodyText}>
+                    {body || 'Letter preview will appear here once generated.'}
+                  </Text>
                 </View>
               )}
             </Animated.View>
 
-            {/* Send Success Toast */}
-            {isSent && (
+            {/* Error Message Display */}
+            {errorMessage ? (
+              <Animated.View entering={FadeInDown.duration(300)} style={styles.errorBanner}>
+                <AlertCircle size={18} color="#EF4444" style={{ marginRight: 8 }} />
+                <Text style={styles.errorText}>{errorMessage}</Text>
+              </Animated.View>
+            ) : null}
+
+            {/* Success Toast */}
+            {successMessage ? (
               <Animated.View entering={FadeInDown.duration(400)} style={styles.successBanner}>
                 <CheckCircle2 size={20} color="#10B981" style={{ marginRight: 8 }} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.successTitle}>
                     {isOffer ? 'Offer Letter Dispatched!' : 'Rejection Email Sent!'}
                   </Text>
-                  <Text style={styles.successSubtext}>
-                    Sent via Gmail SMTP and recorded in MongoDB team activity log.
-                  </Text>
+                  <Text style={styles.successSubtext}>{successMessage}</Text>
                 </View>
               </Animated.View>
+            ) : null}
+
+            {/* Missing email alert */}
+            {!recipientEmail && (
+              <View style={styles.warningNotice}>
+                <AlertCircle size={16} color="#F59E0B" style={{ marginRight: 6 }} />
+                <Text style={styles.warningNoticeText}>
+                  No email address was found on this resume. Please check candidate details.
+                </Text>
+              </View>
             )}
 
             {/* Send CTA Button */}
-            <View style={styles.actionBtnWrapper}>
-              <MonochromeGetStartedButton
-                title={isOffer ? 'Send Offer & Log Activity' : 'Send Rejection & Log Activity'}
-                onPress={handleSend}
-                delay={0}
-              />
-            </View>
-
-            {/* Recent Sends Section */}
-            <Animated.View entering={FadeInUp.delay(300).duration(600)} style={styles.recentSection}>
-              <View style={styles.recentHeaderRow}>
-                <Clock size={16} color="#9CA3AF" style={{ marginRight: 6 }} />
-                <Text style={styles.recentTitle}>Recent Communications</Text>
+            {!alreadySentInfo?.sent && (
+              <View style={styles.actionBtnWrapper}>
+                <TouchableOpacity
+                  style={[
+                    styles.sendButton,
+                    isOffer ? styles.sendButtonOffer : styles.sendButtonRejection,
+                    (!recipientEmail || isSending || isGenerating) && styles.sendButtonDisabled,
+                  ]}
+                  activeOpacity={0.8}
+                  onPress={handleSend}
+                  disabled={!recipientEmail || isSending || isGenerating}
+                >
+                  {isSending ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Send size={18} color="#FFFFFF" style={{ marginRight: 8 }} />
+                      <Text style={styles.sendButtonText}>
+                        {isOffer ? 'Send Offer Letter' : 'Send Rejection Email'}
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               </View>
-
-              <View style={styles.recentList}>
-                {RECENT_SENDS.map((item) => (
-                  <View key={item.id} style={styles.recentCard}>
-                    <View style={styles.recentCardLeft}>
-                      <Text style={styles.recentCandidateName}>{item.candidate_name}</Text>
-                      <View style={styles.recentMetaRow}>
-                        <Briefcase size={12} color="#6B7280" style={{ marginRight: 4 }} />
-                        <Text style={[styles.recentType, { color: item.typeColor }]}>
-                          {item.type}
-                        </Text>
-                        <Text style={styles.recentDot}>•</Text>
-                        <Text style={styles.recentTime}>{item.time}</Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.statusPill}>
-                      <CheckCircle2 size={12} color="#10B981" style={{ marginRight: 4 }} />
-                      <Text style={styles.statusPillText}>{item.status}</Text>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            </Animated.View>
+            )}
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -403,6 +582,9 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 4,
   },
+  tabButtonDisabled: {
+    opacity: 0.5,
+  },
   tabButtonText: {
     fontSize: 14,
     fontWeight: '600',
@@ -427,6 +609,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    marginRight: 10,
   },
   recipientAvatar: {
     width: 44,
@@ -460,6 +643,13 @@ const styles = StyleSheet.create({
   recipientEmail: {
     fontSize: 12,
     color: '#9CA3AF',
+    flex: 1,
+  },
+  recipientEmailMissing: {
+    fontSize: 12,
+    color: '#EF4444',
+    fontStyle: 'italic',
+    flex: 1,
   },
   matchBadge: {
     backgroundColor: 'rgba(16, 185, 129, 0.15)',
@@ -474,13 +664,36 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#10B981',
   },
+  alreadySentCard: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.35)',
+    marginBottom: 16,
+  },
+  alreadySentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  alreadySentTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#10B981',
+  },
+  alreadySentDesc: {
+    fontSize: 13,
+    color: '#D1D5DB',
+    lineHeight: 20,
+  },
   letterCard: {
     backgroundColor: 'rgba(15, 20, 36, 0.75)',
     borderRadius: 20,
     padding: 18,
     borderWidth: 1,
     borderColor: 'rgba(99, 102, 241, 0.25)',
-    marginBottom: 18,
+    marginBottom: 16,
   },
   letterHeader: {
     flexDirection: 'row',
@@ -490,6 +703,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.08)',
     marginBottom: 14,
+  },
+  headerActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   aiBadge: {
     flexDirection: 'row',
@@ -503,6 +721,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: '#C084FC',
+  },
+  regenerateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  regenerateBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#A78BFA',
   },
   editToggleBtn: {
     flexDirection: 'row',
@@ -518,6 +751,54 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#A78BFA',
+  },
+  subjectContainer: {
+    marginBottom: 14,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  subjectLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#9CA3AF',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  subjectInput: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    backgroundColor: 'rgba(10, 14, 26, 0.65)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  subjectText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    lineHeight: 20,
+  },
+  loadingBox: {
+    paddingVertical: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 6,
+  },
+  loadingSubtext: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    maxWidth: 280,
   },
   letterBodyContainer: {
     minHeight: 220,
@@ -538,10 +819,21 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
   },
-  actionBtnWrapper: {
+  errorBanner: {
+    flexDirection: 'row',
     alignItems: 'center',
-    width: '100%',
-    marginBottom: 24,
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+    marginBottom: 16,
+  },
+  errorText: {
+    fontSize: 13,
+    color: '#F87171',
+    flex: 1,
+    lineHeight: 18,
   },
   successBanner: {
     flexDirection: 'row',
@@ -564,70 +856,53 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     lineHeight: 16,
   },
-  recentSection: {
-    marginTop: 8,
-  },
-  recentHeaderRow: {
+  warningNotice: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
-  },
-  recentTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#9CA3AF',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  recentList: {
-    gap: 10,
-  },
-  recentCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: 'rgba(15, 20, 36, 0.65)',
-    borderRadius: 14,
-    padding: 14,
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    padding: 10,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: 'rgba(245, 158, 11, 0.25)',
+    marginBottom: 16,
   },
-  recentCardLeft: {
+  warningNoticeText: {
+    fontSize: 12,
+    color: '#FCD34D',
     flex: 1,
   },
-  recentCandidateName: {
-    fontSize: 14,
+  actionBtnWrapper: {
+    alignItems: 'center',
+    width: '100%',
+    marginBottom: 24,
+  },
+  sendButton: {
+    width: '100%',
+    height: 52,
+    borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  sendButtonOffer: {
+    backgroundColor: '#6366F1',
+    shadowColor: '#6366F1',
+  },
+  sendButtonRejection: {
+    backgroundColor: '#EF4444',
+    shadowColor: '#EF4444',
+  },
+  sendButtonDisabled: {
+    opacity: 0.5,
+  },
+  sendButtonText: {
+    fontSize: 15,
     fontWeight: '700',
     color: '#FFFFFF',
-    marginBottom: 4,
-  },
-  recentMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  recentType: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  recentDot: {
-    color: '#6B7280',
-    marginHorizontal: 6,
-  },
-  recentTime: {
-    fontSize: 12,
-    color: '#6B7280',
-  },
-  statusPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  statusPillText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#10B981',
   },
 });
+

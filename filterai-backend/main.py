@@ -2,6 +2,8 @@ import os
 import re
 import json
 import uuid
+import smtplib
+from email.mime.text import MIMEText
 from datetime import datetime, timezone
 from typing import List, Optional
 import certifi
@@ -10,8 +12,16 @@ import pymupdf as fitz  # PyMuPDF
 from fastapi import FastAPI, HTTPException, status, Depends, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient, DESCENDING
+from pydantic import BaseModel
 
-from models import SignupRequest, LoginRequest, AnalyzeRequest, CandidateInsightsRequest
+from models import (
+    SignupRequest,
+    LoginRequest,
+    AnalyzeRequest,
+    CandidateInsightsRequest,
+    GenerateLetterRequest,
+    SendLetterRequest,
+)
 from auth import hash_password, verify_password, create_access_token, get_current_user
 
 # 1. Load environment variables from .env
@@ -682,6 +692,535 @@ def get_candidate_insights(req: CandidateInsightsRequest):
         "insights": insights_data,
         "cached": False,
     }
+
+
+# =====================================================================
+# Temporary testing endpoint - remove or protect before production use
+# =====================================================================
+
+class TestEmailRequest(BaseModel):
+    to_emails: List[str]
+
+@app.post("/api/test-email")
+def test_send_email(req: TestEmailRequest):
+    gmail_user = os.getenv("GMAIL_USER")
+    gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
+
+    if not gmail_user or not gmail_app_password:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="GMAIL_USER or GMAIL_APP_PASSWORD environment variables are not configured.",
+        )
+
+    if not req.to_emails or len(req.to_emails) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="to_emails list cannot be empty.",
+        )
+
+    if len(req.to_emails) > 5:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="to_emails list cannot contain more than 5 email addresses.",
+        )
+
+    results = []
+
+    # Attempt SMTP connection and authentication with Gmail
+    try:
+        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=15)
+        server.starttls()
+        server.login(gmail_user, gmail_app_password)
+    except smtplib.SMTPAuthenticationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Gmail SMTP authentication failed. Check GMAIL_USER and GMAIL_APP_PASSWORD: {str(e)}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to connect to Gmail SMTP server: {str(e)}",
+        )
+
+    # Send plain-text test email to each recipient individually
+    try:
+        for to_email in req.to_emails:
+            clean_email = to_email.strip()
+            if not clean_email:
+                results.append({"email": to_email, "status": "failed", "error": "Empty email address"})
+                continue
+
+            try:
+                msg = MIMEText(
+                    "This is a test email from your FilterAI backend to confirm Gmail SMTP is working correctly.",
+                    "plain",
+                    "utf-8",
+                )
+                msg["Subject"] = "FilterAI - Test Email"
+                msg["From"] = gmail_user
+                msg["To"] = clean_email
+
+                server.sendmail(gmail_user, [clean_email], msg.as_string())
+                results.append({"email": clean_email, "status": "sent"})
+            except Exception as e:
+                results.append({"email": clean_email, "status": "failed", "error": str(e)})
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            pass
+
+    return {"results": results}
+
+
+# =====================================================================
+# Offer / Rejection Letter Generation & Dispatch Routes
+# =====================================================================
+
+@app.post("/api/candidate-email-status")
+def get_candidate_email_status(req: CandidateInsightsRequest):
+    if batches_collection is None:
+        return {"email_status": "not_sent"}
+
+    batch_doc = None
+    if req.batch_id:
+        batch_doc = batches_collection.find_one({"batch_id": req.batch_id})
+    if not batch_doc:
+        batch_doc = batches_collection.find_one(
+            {"status": {"$in": ["analyzed", "uploaded"]}},
+            sort=[("created_at", DESCENDING)],
+        )
+    if not batch_doc:
+        return {"email_status": "not_sent"}
+
+    files = batch_doc.get("files", [])
+    target_file = None
+    target_candidate_id = req.candidate_id or ""
+    target_file_name = req.file_name or ""
+
+    for file_record in files:
+        f_name = file_record.get("file_name", "")
+        cand_id_derived = f_name.replace(".pdf", "").replace(" ", "_").lower()
+        cand_name = (file_record.get("candidate_name") or "").lower()
+
+        if target_file_name and f_name.lower() == target_file_name.lower():
+            target_file = file_record
+            break
+        if target_candidate_id and (
+            cand_id_derived == target_candidate_id.lower()
+            or cand_name == target_candidate_id.lower()
+        ):
+            target_file = file_record
+            break
+
+    if not target_file and files:
+        target_file = files[0]
+
+    if not target_file:
+        return {"email_status": "not_sent"}
+
+    file_name = target_file.get("file_name", "candidate.pdf")
+    safe_file_key = file_name.replace(".", "_").replace("$", "_")
+    email_status_record = (batch_doc.get("candidate_email_status") or {}).get(safe_file_key) or {}
+
+    is_sent = (
+        email_status_record.get("email_status") == "sent"
+        or target_file.get("email_status") == "sent"
+    )
+
+    return {
+        "email_status": "sent" if is_sent else "not_sent",
+        "email_type_sent": email_status_record.get("email_type_sent") or target_file.get("email_type_sent"),
+        "email_sent_at": email_status_record.get("email_sent_at") or target_file.get("email_sent_at"),
+        "to_email": email_status_record.get("to_email") or target_file.get("extracted_email"),
+        "subject": email_status_record.get("subject"),
+    }
+
+
+@app.post("/api/generate-letter")
+def generate_candidate_letter(req: GenerateLetterRequest):
+    if batches_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database connection unavailable",
+        )
+
+    # 1. Fetch batch document
+    batch_doc = None
+    if req.batch_id:
+        batch_doc = batches_collection.find_one({"batch_id": req.batch_id})
+
+    if not batch_doc:
+        batch_doc = batches_collection.find_one(
+            {"status": {"$in": ["analyzed", "uploaded"]}},
+            sort=[("created_at", DESCENDING)],
+        )
+
+    if not batch_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Batch not found",
+        )
+
+    batch_id = batch_doc.get("batch_id")
+    files = batch_doc.get("files", [])
+    job_description = batch_doc.get("job_description", "")
+
+    # 2. Locate target candidate record
+    target_file = None
+    target_candidate_id = req.candidate_id or ""
+    target_file_name = req.file_name or ""
+
+    for file_record in files:
+        f_name = file_record.get("file_name", "")
+        cand_id_derived = f_name.replace(".pdf", "").replace(" ", "_").lower()
+        cand_name = (file_record.get("candidate_name") or "").lower()
+
+        if target_file_name and f_name.lower() == target_file_name.lower():
+            target_file = file_record
+            break
+        if target_candidate_id and (
+            cand_id_derived == target_candidate_id.lower()
+            or cand_name == target_candidate_id.lower()
+        ):
+            target_file = file_record
+            break
+
+    if not target_file and files:
+        target_file = files[0]
+
+    if not target_file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Candidate record not found in batch",
+        )
+
+    file_name = target_file.get("file_name", "candidate.pdf")
+    safe_file_key = file_name.replace(".", "_").replace("$", "_")
+    candidate_id = target_file.get("candidate_id") or file_name.replace(".pdf", "").replace(" ", "_").lower()
+    candidate_name = target_file.get("candidate_name") or file_name.replace(".pdf", "")
+    extracted_email = target_file.get("extracted_email") or ""
+
+    # 3. Server-side Hard Block: Check if already sent
+    email_status_record = (batch_doc.get("candidate_email_status") or {}).get(safe_file_key) or {}
+    is_already_sent = (
+        email_status_record.get("email_status") == "sent"
+        or target_file.get("email_status") == "sent"
+    )
+
+    if is_already_sent:
+        sent_type = email_status_record.get("email_type_sent") or target_file.get("email_type_sent") or "letter"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"An email ({sent_type}) has already been sent to this candidate. Duplicate sends are not allowed.",
+        )
+
+    raw_text = target_file.get("raw_text", "")
+    letter_type = "offer" if req.letter_type.lower() == "offer" else "rejection"
+
+    # 4. Lazy-load Groq client
+    try:
+        groq_client = get_groq_client()
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Groq API is not configured: {str(e)}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initialize Groq client: {str(e)}",
+        )
+
+    # 5. Build prompt
+    if letter_type == "offer":
+        system_prompt = (
+            "You are an experienced, professional talent acquisition leader. "
+            "Draft a warm, welcoming, and polished formal job offer email to the candidate based on the job description and resume. "
+            "Reference candidate's name, role, and 1-2 genuine strengths from their resume. "
+            "Do NOT fabricate specific numbers for salary or dates; instead use clear placeholder brackets like [START DATE], [SALARY], and [BENEFITS]. "
+            "Return ONLY a JSON object with 'subject' (a clear subject line) and 'body' (the complete plain-text email body with greetings and sign-off). "
+            "Do NOT include markdown fences, backticks, or text outside the JSON object."
+        )
+    else:
+        system_prompt = (
+            "You are a compassionate, professional corporate recruiter. "
+            "Draft a respectful, kind, and professional candidate rejection email for the role in the job description. "
+            "Thank them warmly for their time, acknowledge their background without giving false specific promises, and wish them well. "
+            "Return ONLY a JSON object with 'subject' (a clear subject line) and 'body' (the complete plain-text email body with greetings and sign-off). "
+            "Do NOT include markdown fences, backticks, or text outside the JSON object."
+        )
+
+    user_content = (
+        f"TARGET ROLE & JOB DESCRIPTION:\n{job_description or 'Software / Professional Role'}\n\n"
+        f"CANDIDATE NAME: {candidate_name}\n"
+        f"CANDIDATE RESUME EXCERPT:\n{raw_text[:4000]}"
+    )
+
+    models_to_try = [
+        "llama-3.3-70b-versatile",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-20b",
+    ]
+    raw_output = None
+    last_error = None
+
+    for model_name in models_to_try:
+        try:
+            chat_completion = groq_client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                model=model_name,
+                temperature=0.3,
+                response_format={"type": "json_object"},
+            )
+            raw_output = chat_completion.choices[0].message.content
+            if raw_output:
+                break
+        except Exception as e:
+            err_str = str(e).lower()
+            if "429" in err_str or "rate limit" in err_str:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="AI letter generation is temporarily rate-limited, please try again in a moment",
+                )
+            last_error = e
+
+    if not raw_output:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Groq API letter generation failed: {str(last_error)}",
+        )
+
+    # 6. Parse JSON output
+    cleaned_output = raw_output.strip()
+    if cleaned_output.startswith("```json"):
+        cleaned_output = cleaned_output[7:]
+    elif cleaned_output.startswith("```"):
+        cleaned_output = cleaned_output[3:]
+    if cleaned_output.endswith("```"):
+        cleaned_output = cleaned_output[:-3]
+    cleaned_output = cleaned_output.strip()
+
+    try:
+        parsed_letter = json.loads(cleaned_output)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to parse AI letter response as JSON: {str(e)}",
+        )
+
+    default_subject = (
+        f"Job Offer: Exciting Opportunity with FilterAI"
+        if letter_type == "offer"
+        else f"Update regarding your application with FilterAI"
+    )
+
+    subject = parsed_letter.get("subject") or default_subject
+    body = parsed_letter.get("body") or ""
+
+    return {
+        "batch_id": batch_id,
+        "file_name": file_name,
+        "candidate_id": candidate_id,
+        "candidate_name": candidate_name,
+        "recipient_email": extracted_email,
+        "letter_type": letter_type,
+        "subject": subject,
+        "body": body,
+        "email_status": "not_sent",
+    }
+
+
+@app.post("/api/send-letter")
+def send_candidate_letter(req: SendLetterRequest):
+    gmail_user = os.getenv("GMAIL_USER")
+    gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
+
+    if not gmail_user or not gmail_app_password:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="GMAIL_USER or GMAIL_APP_PASSWORD environment variables are not configured.",
+        )
+
+    if not req.to_email or not req.to_email.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Recipient email address is required.",
+        )
+
+    if not req.body or not req.body.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email body content cannot be empty.",
+        )
+
+    if batches_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database connection unavailable",
+        )
+
+    # 1. Fetch batch document
+    batch_doc = None
+    if req.batch_id:
+        batch_doc = batches_collection.find_one({"batch_id": req.batch_id})
+
+    if not batch_doc:
+        batch_doc = batches_collection.find_one(
+            {"status": {"$in": ["analyzed", "uploaded"]}},
+            sort=[("created_at", DESCENDING)],
+        )
+
+    if not batch_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Batch not found",
+        )
+
+    batch_id = batch_doc.get("batch_id")
+    files = batch_doc.get("files", [])
+
+    # 2. Locate target candidate
+    target_file = None
+    target_candidate_id = req.candidate_id or ""
+    target_file_name = req.file_name or ""
+
+    for file_record in files:
+        f_name = file_record.get("file_name", "")
+        cand_id_derived = f_name.replace(".pdf", "").replace(" ", "_").lower()
+        cand_name = (file_record.get("candidate_name") or "").lower()
+
+        if target_file_name and f_name.lower() == target_file_name.lower():
+            target_file = file_record
+            break
+        if target_candidate_id and (
+            cand_id_derived == target_candidate_id.lower()
+            or cand_name == target_candidate_id.lower()
+        ):
+            target_file = file_record
+            break
+
+    if not target_file and files:
+        target_file = files[0]
+
+    if not target_file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Candidate record not found in batch",
+        )
+
+    file_name = target_file.get("file_name", "candidate.pdf")
+    safe_file_key = file_name.replace(".", "_").replace("$", "_")
+    candidate_id = target_file.get("candidate_id") or file_name.replace(".pdf", "").replace(" ", "_").lower()
+    candidate_name = target_file.get("candidate_name") or file_name.replace(".pdf", "")
+
+    # 3. Server-side Hard Block: Duplicate send prevention check
+    email_status_record = (batch_doc.get("candidate_email_status") or {}).get(safe_file_key) or {}
+    is_already_sent = (
+        email_status_record.get("email_status") == "sent"
+        or target_file.get("email_status") == "sent"
+    )
+
+    if is_already_sent:
+        sent_type = email_status_record.get("email_type_sent") or target_file.get("email_type_sent") or "letter"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"An email ({sent_type}) has already been sent to this candidate. Duplicate sends are not allowed.",
+        )
+
+    to_email_clean = req.to_email.strip()
+    subject_clean = (req.subject or "FilterAI Communication").strip()
+    body_clean = req.body.strip()
+    letter_type = "offer" if req.letter_type.lower() == "offer" else "rejection"
+
+    # 4. Connect to Gmail SMTP & Send
+    try:
+        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=15)
+        server.starttls()
+        server.login(gmail_user, gmail_app_password)
+
+        msg = MIMEText(body_clean, "plain", "utf-8")
+        msg["Subject"] = subject_clean
+        msg["From"] = gmail_user
+        msg["To"] = to_email_clean
+
+        server.sendmail(gmail_user, [to_email_clean], msg.as_string())
+        server.quit()
+    except smtplib.SMTPAuthenticationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Gmail SMTP authentication failed. Check GMAIL_USER and GMAIL_APP_PASSWORD: {str(e)}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to send email via Gmail SMTP: {str(e)}",
+        )
+
+    # 5. On successful send: Update MongoDB batch document
+    now_utc = datetime.now(timezone.utc)
+    status_record = {
+        "email_status": "sent",
+        "email_type_sent": letter_type,
+        "email_sent_at": now_utc,
+        "to_email": to_email_clean,
+        "subject": subject_clean,
+    }
+
+    try:
+        batches_collection.update_one(
+            {"batch_id": batch_id},
+            {
+                "$set": {
+                    f"candidate_email_status.{safe_file_key}": status_record,
+                    "updated_at": now_utc,
+                }
+            },
+        )
+        batches_collection.update_one(
+            {"batch_id": batch_id, "files.file_name": file_name},
+            {
+                "$set": {
+                    "files.$.email_status": "sent",
+                    "files.$.email_type_sent": letter_type,
+                    "files.$.email_sent_at": now_utc,
+                }
+            },
+        )
+    except Exception as e:
+        print(f"Warning: Failed to update candidate email status in MongoDB: {e}")
+
+    # 6. Log to activity_log_collection
+    if activity_log_collection is not None:
+        try:
+            action_type = "offer_sent" if letter_type == "offer" else "rejection_sent"
+            activity_log_collection.insert_one({
+                "user_id": "system",
+                "user_name": "FilterAI Recruiter",
+                "action_type": action_type,
+                "batch_id": batch_id,
+                "candidate_id": candidate_id,
+                "candidate_name": candidate_name,
+                "recipient_email": to_email_clean,
+                "details": f"{'Offer letter' if letter_type == 'offer' else 'Rejection letter'} dispatched to {to_email_clean} (Subject: {subject_clean})",
+                "timestamp": now_utc,
+            })
+        except Exception as e:
+            print(f"Warning: Failed to record activity log: {e}")
+
+    return {
+        "success": True,
+        "message": f"{'Offer letter' if letter_type == 'offer' else 'Rejection letter'} sent successfully",
+        "recipient": to_email_clean,
+        "letter_type": letter_type,
+        "sent_at": now_utc.isoformat(),
+    }
+
+
 
 
 
