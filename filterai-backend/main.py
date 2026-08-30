@@ -1139,8 +1139,7 @@ def send_candidate_letter(req: SendLetterRequest):
 
     # 4. Connect to Gmail SMTP & Send
     try:
-        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=15)
-        server.starttls()
+        server = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15)
         server.login(gmail_user, gmail_app_password)
 
         msg = MIMEText(body_clean, "plain", "utf-8")
