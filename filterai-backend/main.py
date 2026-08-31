@@ -3,7 +3,7 @@ import re
 import json
 import uuid
 import smtplib
-import resend
+import base64
 from email.mime.text import MIMEText
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -28,11 +28,45 @@ from auth import hash_password, verify_password, create_access_token, get_curren
 # 1. Load environment variables from .env
 load_dotenv()
 
-# --- Lazy-loaded Globals for ML, Vector DB & LLM ---
+# --- Lazy-loaded Globals for ML, Vector DB, LLM & Gmail API ---
 _embedding_model = None
 _chroma_client = None
 _text_splitter = None
 _groq_client = None
+_gmail_service = None
+
+def get_gmail_service():
+    global _gmail_service
+    if _gmail_service is None:
+        client_id = os.getenv("GMAIL_CLIENT_ID")
+        client_secret = os.getenv("GMAIL_CLIENT_SECRET")
+        refresh_token = os.getenv("GMAIL_REFRESH_TOKEN")
+
+        missing_vars = []
+        if not client_id:
+            missing_vars.append("GMAIL_CLIENT_ID")
+        if not client_secret:
+            missing_vars.append("GMAIL_CLIENT_SECRET")
+        if not refresh_token:
+            missing_vars.append("GMAIL_REFRESH_TOKEN")
+
+        if missing_vars:
+            raise ValueError(f"Missing OAuth environment variables: {', '.join(missing_vars)}")
+
+        print("Initializing Gmail API client...")
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+
+        creds = Credentials(
+            None,
+            refresh_token=refresh_token,
+            client_id=client_id,
+            client_secret=client_secret,
+            token_uri="https://oauth2.googleapis.com/token",
+        )
+        _gmail_service = build("gmail", "v1", credentials=creds)
+        print("Gmail API client initialized")
+    return _gmail_service
 
 def get_groq_client():
     global _groq_client
@@ -1037,15 +1071,26 @@ def generate_candidate_letter(req: GenerateLetterRequest):
 
 @app.post("/api/send-letter")
 def send_candidate_letter(req: SendLetterRequest):
-    resend_api_key = os.getenv("RESEND_API_KEY")
-    if not resend_api_key:
+    gmail_user = os.getenv("GMAIL_USER")
+    if not gmail_user:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="RESEND_API_KEY environment variable is not configured.",
+            detail="GMAIL_USER environment variable is not configured.",
         )
 
-    gmail_user = os.getenv("GMAIL_USER")
-    resend.api_key = resend_api_key
+    # Initialize Gmail API service (lazy-loaded)
+    try:
+        service = get_gmail_service()
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Gmail API configuration error: {str(e)}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initialize Gmail API service: {str(e)}",
+        )
 
     if not req.to_email or not req.to_email.strip():
         raise HTTPException(
@@ -1138,22 +1183,19 @@ def send_candidate_letter(req: SendLetterRequest):
     body_clean = req.body.strip()
     letter_type = "offer" if req.letter_type.lower() == "offer" else "rejection"
 
-    # 4. Dispatch Email via Resend HTTPS API
+    # 4. Dispatch Email via Gmail REST API over HTTPS
     try:
-        email_params = {
-            "from": "FilterAI <onboarding@resend.dev>",
-            "to": [to_email_clean],
-            "subject": subject_clean,
-            "text": body_clean,
-        }
-        if gmail_user:
-            email_params["reply_to"] = gmail_user
+        msg = MIMEText(body_clean, "plain", "utf-8")
+        msg["Subject"] = subject_clean
+        msg["From"] = gmail_user
+        msg["To"] = to_email_clean
 
-        resend.Emails.send(email_params)
+        raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        service.users().messages().send(userId="me", body={"raw": raw_message}).execute()
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to send email via Resend API: {str(e)}",
+            detail=f"Failed to send email via Gmail API: {str(e)}",
         )
 
     # 5. On successful send: Update MongoDB batch document
