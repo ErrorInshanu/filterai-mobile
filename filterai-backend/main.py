@@ -3,6 +3,7 @@ import re
 import json
 import uuid
 import smtplib
+import resend
 from email.mime.text import MIMEText
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -728,8 +729,7 @@ def test_send_email(req: TestEmailRequest):
 
     # Attempt SMTP connection and authentication with Gmail
     try:
-        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=15)
-        server.starttls()
+        server = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15)
         server.login(gmail_user, gmail_app_password)
     except smtplib.SMTPAuthenticationError as e:
         raise HTTPException(
@@ -1037,14 +1037,15 @@ def generate_candidate_letter(req: GenerateLetterRequest):
 
 @app.post("/api/send-letter")
 def send_candidate_letter(req: SendLetterRequest):
-    gmail_user = os.getenv("GMAIL_USER")
-    gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
-
-    if not gmail_user or not gmail_app_password:
+    resend_api_key = os.getenv("RESEND_API_KEY")
+    if not resend_api_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="GMAIL_USER or GMAIL_APP_PASSWORD environment variables are not configured.",
+            detail="RESEND_API_KEY environment variable is not configured.",
         )
+
+    gmail_user = os.getenv("GMAIL_USER")
+    resend.api_key = resend_api_key
 
     if not req.to_email or not req.to_email.strip():
         raise HTTPException(
@@ -1137,27 +1138,22 @@ def send_candidate_letter(req: SendLetterRequest):
     body_clean = req.body.strip()
     letter_type = "offer" if req.letter_type.lower() == "offer" else "rejection"
 
-    # 4. Connect to Gmail SMTP & Send
+    # 4. Dispatch Email via Resend HTTPS API
     try:
-        server = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15)
-        server.login(gmail_user, gmail_app_password)
+        email_params = {
+            "from": "FilterAI <onboarding@resend.dev>",
+            "to": [to_email_clean],
+            "subject": subject_clean,
+            "text": body_clean,
+        }
+        if gmail_user:
+            email_params["reply_to"] = gmail_user
 
-        msg = MIMEText(body_clean, "plain", "utf-8")
-        msg["Subject"] = subject_clean
-        msg["From"] = gmail_user
-        msg["To"] = to_email_clean
-
-        server.sendmail(gmail_user, [to_email_clean], msg.as_string())
-        server.quit()
-    except smtplib.SMTPAuthenticationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Gmail SMTP authentication failed. Check GMAIL_USER and GMAIL_APP_PASSWORD: {str(e)}",
-        )
+        resend.Emails.send(email_params)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to send email via Gmail SMTP: {str(e)}",
+            detail=f"Failed to send email via Resend API: {str(e)}",
         )
 
     # 5. On successful send: Update MongoDB batch document
