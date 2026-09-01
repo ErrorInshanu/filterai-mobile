@@ -36,6 +36,7 @@ export default function OfferLetterScreen() {
   const route = useRoute();
 
   const currentBatchId = useAppStore((state) => state.currentBatchId);
+  const token = useAppStore((state) => state.token);
   const rawCandidate = route.params?.candidate || {};
 
   const displayName =
@@ -184,9 +185,14 @@ export default function OfferLetterScreen() {
     setSuccessMessage('');
 
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
       const response = await fetch(`${API_URL}/api/send-letter`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           batch_id: batchId || undefined,
           candidate_id: candidateId || undefined,

@@ -24,6 +24,7 @@ export default function HomeScreen() {
   const navigation = useNavigation();
 
   // Zustand Store
+  const token = useAppStore((state) => state.token);
   const uploadedResumes = useAppStore((state) => state.uploadedResumes);
   const setUploadedResumes = useAppStore((state) => state.setUploadedResumes);
   const jobDescription = useAppStore((state) => state.jobDescription);
@@ -146,11 +147,16 @@ export default function HomeScreen() {
     setLoadingStep('analyzing');
 
     try {
+      const headers = {
+        'Content-Type': 'application/json',
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
       const analyzeResponse = await fetch(`${API_URL}/api/analyze`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify({ batch_id: batchId }),
       });
 

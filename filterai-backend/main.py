@@ -335,7 +335,7 @@ async def upload_resumes(
 # --- Resume Matching / Analysis Route ---
 
 @app.post("/api/analyze")
-def analyze_batch(req: AnalyzeRequest):
+def analyze_batch(req: AnalyzeRequest, current_user: dict = Depends(get_current_user)):
     if batches_collection is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -514,6 +514,28 @@ def analyze_batch(req: AnalyzeRequest):
             }
         },
     )
+
+    # 7. Log to activity_log_collection
+    if activity_log_collection is not None:
+        try:
+            now_utc = datetime.now(timezone.utc)
+            job_preview = (job_description[:50] + "...") if len(job_description) > 50 else job_description
+            details_str = (
+                f"Analyzed {len(ranked_candidates)} resumes for job: {job_preview}"
+                if job_preview
+                else f"Analyzed {len(ranked_candidates)} resumes"
+            )
+            activity_log_collection.insert_one({
+                "user_id": current_user["id"],
+                "user_name": current_user["email"],
+                "action_type": "batch_analyzed",
+                "batch_id": req.batch_id,
+                "candidate_count": len(ranked_candidates),
+                "details": details_str,
+                "timestamp": now_utc,
+            })
+        except Exception as e:
+            print(f"Warning: Failed to record activity log in analyze: {e}")
 
     return {
         "batch_id": req.batch_id,
@@ -1070,7 +1092,7 @@ def generate_candidate_letter(req: GenerateLetterRequest):
 
 
 @app.post("/api/send-letter")
-def send_candidate_letter(req: SendLetterRequest):
+def send_candidate_letter(req: SendLetterRequest, current_user: dict = Depends(get_current_user)):
     gmail_user = os.getenv("GMAIL_USER")
     if not gmail_user:
         raise HTTPException(
@@ -1236,8 +1258,8 @@ def send_candidate_letter(req: SendLetterRequest):
         try:
             action_type = "offer_sent" if letter_type == "offer" else "rejection_sent"
             activity_log_collection.insert_one({
-                "user_id": "system",
-                "user_name": "FilterAI Recruiter",
+                "user_id": current_user["id"],
+                "user_name": current_user["email"],
                 "action_type": action_type,
                 "batch_id": batch_id,
                 "candidate_id": candidate_id,
@@ -1256,6 +1278,49 @@ def send_candidate_letter(req: SendLetterRequest):
         "letter_type": letter_type,
         "sent_at": now_utc.isoformat(),
     }
+
+
+# --- Activity Log Route ---
+
+@app.get("/api/activity-log")
+def get_activity_log(current_user: dict = Depends(get_current_user)):
+    if activity_log_collection is None:
+        return []
+
+    try:
+        cursor = activity_log_collection.find().sort("timestamp", DESCENDING).limit(50)
+        logs = []
+        for doc in cursor:
+            raw_ts = doc.get("timestamp")
+            if isinstance(raw_ts, datetime):
+                ts_iso = raw_ts.isoformat()
+            elif raw_ts:
+                ts_iso = str(raw_ts)
+            else:
+                ts_iso = datetime.now(timezone.utc).isoformat()
+
+            entry = {
+                "id": str(doc.get("_id", "")),
+                "action_type": doc.get("action_type", ""),
+                "user_name": doc.get("user_name", ""),
+                "batch_id": doc.get("batch_id", ""),
+                "details": doc.get("details", ""),
+                "timestamp": ts_iso,
+            }
+            if doc.get("candidate_name"):
+                entry["candidate_name"] = doc["candidate_name"]
+            if doc.get("candidate_count") is not None:
+                entry["candidate_count"] = doc["candidate_count"]
+
+            logs.append(entry)
+        return logs
+    except Exception as e:
+        print(f"Warning: Failed to fetch activity log: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch activity log: {str(e)}",
+        )
+
 
 
 
