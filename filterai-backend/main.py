@@ -1322,6 +1322,141 @@ def get_activity_log(current_user: dict = Depends(get_current_user)):
         )
 
 
+# --- Dashboard Stats Route ---
+
+@app.get("/api/dashboard-stats")
+def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
+    default_stats = {
+        "total_resumes_screened": 0,
+        "total_batches_analyzed": 0,
+        "average_match_score": 0.0,
+        "total_offers_sent": 0,
+        "total_rejections_sent": 0,
+        "match_score_trend": [],
+        "recent_batches": [],
+    }
+
+    if batches_collection is None:
+        return default_stats
+
+    try:
+        # 1. Total Resumes Screened (sum of files array lengths across all batches)
+        resumes_pipeline = [
+            {
+                "$project": {
+                    "count": {
+                        "$cond": {
+                            "if": {"$isArray": "$files"},
+                            "then": {"$size": "$files"},
+                            "else": 0,
+                        }
+                    }
+                }
+            },
+            {"$group": {"_id": None, "total": {"$sum": "$count"}}},
+        ]
+        res_agg = list(batches_collection.aggregate(resumes_pipeline))
+        total_resumes_screened = int(res_agg[0]["total"]) if res_agg and "total" in res_agg[0] else 0
+
+        # 2. Total Batches Analyzed
+        total_batches_analyzed = batches_collection.count_documents({"status": "analyzed"})
+
+        # 3. Average Match Score across all analyzed batches
+        score_pipeline = [
+            {"$match": {"status": "analyzed", "ranked_candidates": {"$exists": True, "$ne": []}}},
+            {"$unwind": "$ranked_candidates"},
+            {"$match": {"ranked_candidates.match_score": {"$type": "number"}}},
+            {"$group": {"_id": None, "avg_score": {"$avg": "$ranked_candidates.match_score"}}},
+        ]
+        score_agg = list(batches_collection.aggregate(score_pipeline))
+        if score_agg and score_agg[0].get("avg_score") is not None:
+            average_match_score = round(float(score_agg[0]["avg_score"]), 1)
+        else:
+            average_match_score = 0.0
+
+        # 4. Activity log stats: offers & rejections
+        if activity_log_collection is not None:
+            total_offers_sent = activity_log_collection.count_documents({"action_type": "offer_sent"})
+            total_rejections_sent = activity_log_collection.count_documents({"action_type": "rejection_sent"})
+        else:
+            total_offers_sent = 0
+            total_rejections_sent = 0
+
+        # 5. Match score trend for up to 8 most recent analyzed batches
+        analyzed_cursor = batches_collection.find(
+            {"status": "analyzed"},
+            {"batch_id": 1, "job_description": 1, "ranked_candidates": 1, "created_at": 1}
+        ).sort("created_at", DESCENDING).limit(8)
+
+        match_score_trend = []
+        for b in analyzed_cursor:
+            cands = b.get("ranked_candidates", [])
+            scores = [c.get("match_score") for c in cands if isinstance(c.get("match_score"), (int, float))]
+            avg_score = round(sum(scores) / len(scores), 1) if scores else 0.0
+            created_at_val = b.get("created_at")
+            if isinstance(created_at_val, datetime):
+                date_iso = created_at_val.isoformat()
+            elif created_at_val:
+                date_iso = str(created_at_val)
+            else:
+                date_iso = datetime.now(timezone.utc).isoformat()
+
+            jd_raw = b.get("job_description") or ""
+            jd_trunc = jd_raw[:30]
+
+            match_score_trend.append({
+                "batch_id": str(b.get("batch_id", "")),
+                "job_description": jd_trunc,
+                "average_score": avg_score,
+                "date": date_iso,
+            })
+        match_score_trend.reverse()
+
+        # 6. Recent 5 batches (any status)
+        recent_cursor = batches_collection.find(
+            {},
+            {"batch_id": 1, "job_description": 1, "files": 1, "status": 1, "created_at": 1}
+        ).sort("created_at", DESCENDING).limit(5)
+
+        recent_batches = []
+        for b in recent_cursor:
+            created_at_val = b.get("created_at")
+            if isinstance(created_at_val, datetime):
+                date_iso = created_at_val.isoformat()
+            elif created_at_val:
+                date_iso = str(created_at_val)
+            else:
+                date_iso = datetime.now(timezone.utc).isoformat()
+
+            jd_raw = b.get("job_description") or ""
+            jd_trunc = jd_raw[:60]
+            files_list = b.get("files", [])
+            cand_count = len(files_list) if isinstance(files_list, list) else 0
+
+            recent_batches.append({
+                "batch_id": str(b.get("batch_id", "")),
+                "job_description": jd_trunc,
+                "candidate_count": cand_count,
+                "status": b.get("status", "uploaded"),
+                "created_at": date_iso,
+            })
+
+        return {
+            "total_resumes_screened": total_resumes_screened,
+            "total_batches_analyzed": total_batches_analyzed,
+            "average_match_score": average_match_score,
+            "total_offers_sent": total_offers_sent,
+            "total_rejections_sent": total_rejections_sent,
+            "match_score_trend": match_score_trend,
+            "recent_batches": recent_batches,
+        }
+
+    except Exception as e:
+        print(f"Warning: Failed to compute dashboard stats: {e}")
+        return default_stats
+
+
+
 
 
 
