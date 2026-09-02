@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
-import { Search, Mail, FileText, ChevronRight, Users, Sparkles, Scale } from 'lucide-react-native';
+import { Search, Mail, FileText, ChevronRight, Users, Sparkles, Scale, FileSpreadsheet } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 
 import MonochromeBackground from '../components/landing/MonochromeBackground';
@@ -21,8 +21,10 @@ export default function CandidateListScreen() {
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Read candidates from Zustand store
+  // Read candidates and currentBatchId from Zustand store
   const storeCandidates = useAppStore((state) => state.candidates);
+  const currentBatchId = useAppStore((state) => state.currentBatchId);
+
 
   // Defensively sort candidates by match_score descending
   const sortedCandidates = useMemo(() => {
@@ -177,16 +179,31 @@ export default function CandidateListScreen() {
           </Text>
         </View>
 
-        {sortedCandidates.length > 1 && (
-          <TouchableOpacity
-            style={styles.compareHeaderBtn}
-            activeOpacity={0.8}
-            onPress={() => navigation.navigate('Comparison')}
-          >
-            <Scale size={15} color="#C084FC" style={{ marginRight: 6 }} />
-            <Text style={styles.compareHeaderBtnText}>Compare</Text>
-          </TouchableOpacity>
-        )}
+        <View style={styles.headerButtonsRow}>
+          {sortedCandidates.length > 1 && (
+            <TouchableOpacity
+              style={styles.compareHeaderBtn}
+              activeOpacity={0.8}
+              onPress={() => navigation.navigate('Comparison')}
+            >
+              <Scale size={15} color="#C084FC" style={{ marginRight: 6 }} />
+              <Text style={styles.compareHeaderBtnText}>Compare</Text>
+            </TouchableOpacity>
+          )}
+
+          {sortedCandidates.length > 0 && (
+            <TouchableOpacity
+              style={styles.reportHeaderBtn}
+              activeOpacity={0.8}
+              onPress={() =>
+                navigation.navigate('Report', { batch_id: currentBatchId })
+              }
+            >
+              <FileSpreadsheet size={15} color="#818CF8" style={{ marginRight: 6 }} />
+              <Text style={styles.reportHeaderBtnText}>Report</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       {/* Search Input Bar */}
@@ -307,11 +324,16 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     marginTop: 2,
   },
+  headerButtonsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   compareHeaderBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(167, 139, 250, 0.15)',
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 12,
     borderWidth: 1,
@@ -322,6 +344,22 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#C084FC',
   },
+  reportHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.35)',
+  },
+  reportHeaderBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#818CF8',
+  },
+
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',

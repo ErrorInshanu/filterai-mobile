@@ -4,16 +4,25 @@ import json
 import uuid
 import smtplib
 import base64
+import io
 from email.mime.text import MIMEText
 from datetime import datetime, timezone
 from typing import List, Optional
 import certifi
 from dotenv import load_dotenv
 import pymupdf as fitz  # PyMuPDF
-from fastapi import FastAPI, HTTPException, status, Depends, File, Form, UploadFile
+from fastapi import FastAPI, HTTPException, status, Depends, File, Form, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient, DESCENDING
 from pydantic import BaseModel
+
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.graphics.shapes import Drawing
+from reportlab.graphics.charts.barcharts import VerticalBarChart
+
 
 from models import (
     SignupRequest,
@@ -1454,6 +1463,317 @@ def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         print(f"Warning: Failed to compute dashboard stats: {e}")
         return default_stats
+
+
+# --- Report Generation Route ---
+
+@app.get("/api/generate-report/{batch_id}")
+def generate_batch_report(batch_id: str, current_user: dict = Depends(get_current_user)):
+    if batches_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database connection not available",
+        )
+
+    batch_doc = batches_collection.find_one({"batch_id": batch_id})
+    if not batch_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Batch with ID '{batch_id}' not found",
+        )
+
+    ranked_candidates = batch_doc.get("ranked_candidates", [])
+    if not ranked_candidates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch has not been analyzed yet or has no ranked candidates",
+        )
+
+    try:
+        # 1. Fetch matching activity log for 'batch_analyzed'
+        analyzed_by = "Unknown"
+        analyzed_on_str = ""
+        if activity_log_collection is not None:
+            act = activity_log_collection.find_one(
+                {"batch_id": batch_id, "action_type": "batch_analyzed"}
+            )
+            if act:
+                analyzed_by = act.get("user_name") or current_user.get("email") or "Unknown"
+                ts = act.get("timestamp")
+                if isinstance(ts, datetime):
+                    analyzed_on_str = ts.strftime("%b %d, %Y · %I:%M %p UTC")
+                elif ts:
+                    analyzed_on_str = str(ts)
+
+        if not analyzed_on_str:
+            created_val = batch_doc.get("created_at")
+            if isinstance(created_val, datetime):
+                analyzed_on_str = created_val.strftime("%b %d, %Y · %I:%M %p UTC")
+            elif created_val:
+                analyzed_on_str = str(created_val)
+            else:
+                analyzed_on_str = datetime.now(timezone.utc).strftime("%b %d, %Y · %I:%M %p UTC")
+
+        if analyzed_by == "Unknown" and current_user.get("email"):
+            analyzed_by = current_user.get("email")
+
+        # 2. Compute metrics
+        files_list = batch_doc.get("files", [])
+        total_uploaded = len(files_list) if isinstance(files_list, list) else len(ranked_candidates)
+        total_ranked = len(ranked_candidates)
+
+        scores = [
+            float(c.get("match_score", 0))
+            for c in ranked_candidates
+            if isinstance(c.get("match_score"), (int, float))
+        ]
+        avg_score = round(sum(scores) / len(scores), 1) if scores else 0.0
+        highest_score = round(max(scores), 1) if scores else 0.0
+        lowest_score = round(min(scores), 1) if scores else 0.0
+
+        high_count = sum(1 for s in scores if s >= 70)
+        moderate_count = sum(1 for s in scores if 40 <= s < 70)
+        low_count = sum(1 for s in scores if s < 40)
+
+        # 3. Build PDF with ReportLab
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=letter,
+            leftMargin=36,
+            rightMargin=36,
+            topMargin=36,
+            bottomMargin=36,
+        )
+
+        styles = getSampleStyleSheet()
+
+        title_style = ParagraphStyle(
+            name='RepTitle',
+            fontName='Helvetica-Bold',
+            fontSize=18,
+            textColor=colors.HexColor('#0F172A'),
+            spaceAfter=3,
+        )
+        subtitle_style = ParagraphStyle(
+            name='RepSubtitle',
+            fontName='Helvetica',
+            fontSize=9.5,
+            textColor=colors.HexColor('#64748B'),
+            spaceAfter=12,
+        )
+        section_heading = ParagraphStyle(
+            name='SecHeading',
+            fontName='Helvetica-Bold',
+            fontSize=11,
+            textColor=colors.HexColor('#1E293B'),
+            spaceBefore=10,
+            spaceAfter=5,
+        )
+        meta_label = ParagraphStyle(
+            name='MLabel',
+            fontName='Helvetica-Bold',
+            fontSize=8.5,
+            textColor=colors.HexColor('#475569'),
+        )
+        meta_val = ParagraphStyle(
+            name='MVal',
+            fontName='Helvetica',
+            fontSize=8.5,
+            textColor=colors.HexColor('#0F172A'),
+        )
+        cell_text = ParagraphStyle(
+            name='CText',
+            fontName='Helvetica',
+            fontSize=8.5,
+            textColor=colors.HexColor('#1E293B'),
+        )
+        cell_header = ParagraphStyle(
+            name='CHeader',
+            fontName='Helvetica-Bold',
+            fontSize=8.5,
+            textColor=colors.white,
+        )
+        footer_note = ParagraphStyle(
+            name='FootNote',
+            fontName='Helvetica-Oblique',
+            fontSize=8,
+            textColor=colors.HexColor('#64748B'),
+            spaceBefore=8,
+        )
+
+        story = []
+        story.append(Paragraph('FilterAI — Candidate Screening Report', title_style))
+        story.append(Paragraph('Confidential automated resume ranking & vector similarity analysis', subtitle_style))
+
+        # Metadata Table
+        job_desc_raw = batch_doc.get("job_description") or "General Candidate Screening"
+        job_desc_clean = job_desc_raw[:80] + ("..." if len(job_desc_raw) > 80 else "")
+
+        meta_data = [
+            [Paragraph('<b>Target Role:</b>', meta_label), Paragraph(job_desc_clean, meta_val),
+             Paragraph('<b>Analyzed By:</b>', meta_label), Paragraph(analyzed_by, meta_val)],
+            [Paragraph('<b>Batch ID:</b>', meta_label), Paragraph(batch_id, meta_val),
+             Paragraph('<b>Analyzed On:</b>', meta_label), Paragraph(analyzed_on_str, meta_val)],
+        ]
+        meta_table = Table(meta_data, colWidths=[75, 195, 75, 195])
+        meta_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F8FAFC')),
+            ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#E2E8F0')),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('TOPPADDING', (0,0), (-1,-1), 5),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+            ('LEFTPADDING', (0,0), (-1,-1), 6),
+            ('RIGHTPADDING', (0,0), (-1,-1), 6),
+        ]))
+        story.append(meta_table)
+        story.append(Spacer(1, 8))
+
+        # Metrics Summary Table
+        story.append(Paragraph('Batch Screening Metrics', section_heading))
+        stats_data = [
+            [
+                Paragraph('<b>Uploaded Resumes</b>', meta_label),
+                Paragraph('<b>Successfully Ranked</b>', meta_label),
+                Paragraph('<b>Average Score</b>', meta_label),
+                Paragraph('<b>Top Score</b>', meta_label),
+                Paragraph('<b>Lowest Score</b>', meta_label),
+            ],
+            [
+                Paragraph(str(total_uploaded), cell_text),
+                Paragraph(str(total_ranked), cell_text),
+                Paragraph(f"{avg_score}%", cell_text),
+                Paragraph(f"{highest_score}%", cell_text),
+                Paragraph(f"{lowest_score}%", cell_text),
+            ],
+            [
+                Paragraph('<b>High Match (≥70%)</b>', meta_label),
+                Paragraph('<b>Moderate (40-69%)</b>', meta_label),
+                Paragraph('<b>Low Match (&lt;40%)</b>', meta_label),
+                Paragraph('<b>Parse Yield</b>', meta_label),
+                Paragraph('-', meta_label),
+            ],
+            [
+                Paragraph(f"{high_count} candidate{'s' if high_count != 1 else ''}", cell_text),
+                Paragraph(f"{moderate_count} candidate{'s' if moderate_count != 1 else ''}", cell_text),
+                Paragraph(f"{low_count} candidate{'s' if low_count != 1 else ''}", cell_text),
+                Paragraph(f"{round((total_ranked/total_uploaded)*100, 1) if total_uploaded else 100}%", cell_text),
+                Paragraph('-', cell_text),
+            ],
+        ]
+        stats_table = Table(stats_data, colWidths=[108, 108, 108, 108, 108])
+        stats_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F1F5F9')),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#CBD5E1')),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('TOPPADDING', (0,0), (-1,-1), 4),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+            ('LEFTPADDING', (0,0), (-1,-1), 5),
+            ('RIGHTPADDING', (0,0), (-1,-1), 5),
+        ]))
+        story.append(stats_table)
+        story.append(Spacer(1, 8))
+
+        # Match Score Distribution Chart (ReportLab VerticalBarChart)
+        if ranked_candidates:
+            chart_candidates = ranked_candidates[:12]  # Chart top up to 12 candidates
+            chart_scores = [
+                float(c.get("match_score", 0)) for c in chart_candidates
+            ]
+            chart_names = [
+                (c.get("candidate_name") or c.get("file_name", "").replace(".pdf", "") or f"C{i+1}")[:10]
+                for i, c in enumerate(chart_candidates)
+            ]
+
+            chart_drawing = Drawing(540, 130)
+            bc = VerticalBarChart()
+            bc.x = 35
+            bc.y = 20
+            bc.height = 95
+            bc.width = 480
+            bc.data = [chart_scores]
+            bc.categoryAxis.categoryNames = chart_names
+            bc.categoryAxis.labels.fontSize = 8
+            bc.categoryAxis.labels.boxAnchor = 'n'
+            bc.categoryAxis.labels.dy = -4
+            bc.valueAxis.valueMin = 0
+            bc.valueAxis.valueMax = 100
+            bc.valueAxis.valueStep = 20
+            bc.valueAxis.labels.fontSize = 8
+            bc.bars[0].fillColor = colors.HexColor('#6366F1')
+            chart_drawing.add(bc)
+
+            story.append(Paragraph('Match Score Distribution (Top Candidates)', section_heading))
+            story.append(chart_drawing)
+            story.append(Spacer(1, 8))
+
+        # Ranked Candidates Table
+        story.append(Paragraph('Ranked Candidates Roster (Sorted by Match Score)', section_heading))
+        table_rows = [
+            [
+                Paragraph('Rank', cell_header),
+                Paragraph('Candidate Name', cell_header),
+                Paragraph('Extracted Email', cell_header),
+                Paragraph('Match Score', cell_header),
+                Paragraph('Score Tier', cell_header),
+            ]
+        ]
+
+        for idx, cand in enumerate(ranked_candidates):
+            c_name = cand.get("candidate_name") or (cand.get("file_name", "").replace(".pdf", "")) or f"Candidate #{idx+1}"
+            c_email = cand.get("extracted_email") or "Not Extracted"
+            c_score = float(cand.get("match_score", 0))
+            tier_name = "High Match" if c_score >= 70 else ("Moderate" if c_score >= 40 else "Low Match")
+
+            table_rows.append([
+                Paragraph(f"#{idx+1}", cell_text),
+                Paragraph(c_name[:32], cell_text),
+                Paragraph(c_email[:35], cell_text),
+                Paragraph(f"{round(c_score, 1)}%", cell_text),
+                Paragraph(tier_name, cell_text),
+            ])
+
+        cand_table = Table(table_rows, colWidths=[38, 145, 185, 76, 96])
+        cand_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E1B4B')),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F8FAFC')]),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('TOPPADDING', (0,0), (-1,-1), 4),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+            ('LEFTPADDING', (0,0), (-1,-1), 5),
+            ('RIGHTPADDING', (0,0), (-1,-1), 5),
+        ]))
+        story.append(cand_table)
+
+        # Skipped Resumes Transparency Note
+        if total_uploaded > total_ranked:
+            diff = total_uploaded - total_ranked
+            story.append(Spacer(1, 6))
+            story.append(Paragraph(
+                f"<b>Transparency Note:</b> {diff} of {total_uploaded} uploaded resume file(s) could not be parsed or embedded and were excluded from scoring.",
+                footer_note
+            ))
+
+        doc.build(story)
+        pdf_bytes = buffer.getvalue()
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="FilterAI_Report_{batch_id}.pdf"',
+                "Content-Type": "application/pdf",
+            },
+        )
+
+    except Exception as e:
+        print(f"Error generating PDF report for batch {batch_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate PDF report: {str(e)}",
+        )
+
 
 
 
