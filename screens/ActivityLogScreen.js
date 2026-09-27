@@ -26,6 +26,8 @@ import {
 import MonochromeBackground from '../components/landing/MonochromeBackground';
 import { API_URL } from '../constants/api';
 import { useAppStore } from '../store/useAppStore';
+import { authenticatedFetch } from '../utils/apiClient';
+
 
 const FILTER_CHIPS = [
   { id: 'all', label: 'All' },
@@ -146,17 +148,13 @@ export default function ActivityLogScreen() {
       setErrorMessage(null);
 
       try {
-        const headers = {
-          'Content-Type': 'application/json',
-        };
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        const response = await fetch(`${API_URL}/api/activity-log`, {
+        const response = await authenticatedFetch(`${API_URL}/api/activity-log`, {
           method: 'GET',
-          headers,
+          headers: {
+            'Content-Type': 'application/json',
+          },
         });
+
 
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));

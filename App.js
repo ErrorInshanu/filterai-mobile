@@ -1,4 +1,5 @@
 import React from 'react';
+import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
@@ -12,14 +13,30 @@ import ComparisonScreen from './screens/ComparisonScreen';
 import OfferLetterScreen from './screens/OfferLetterScreen';
 import ReportScreen from './screens/ReportScreen';
 import MainTabsNavigator from './navigation/MainTabsNavigator';
+import { useAppStore } from './store/useAppStore';
+import { navigationRef } from './utils/navigation';
 
 const Stack = createNativeStackNavigator();
 
 export default function App() {
+  const hasHydrated = useAppStore((state) => state._hasHydrated);
+  const token = useAppStore((state) => state.token || state.authToken);
+
+  // While AsyncStorage rehydrates persisted session, display sleek dark splash view
+  if (!hasHydrated) {
+    return (
+      <View style={styles.splashContainer}>
+        <ActivityIndicator size="large" color="#8B5CF6" />
+        <StatusBar style="light" />
+      </View>
+    );
+  }
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <NavigationContainer>
+      <NavigationContainer ref={navigationRef}>
         <Stack.Navigator
+          initialRouteName={token ? 'Home' : 'Landing'}
           screenOptions={{
             headerShown: false,
             contentStyle: { backgroundColor: '#0B0F19' },
@@ -41,3 +58,13 @@ export default function App() {
     </GestureHandlerRootView>
   );
 }
+
+const styles = StyleSheet.create({
+  splashContainer: {
+    flex: 1,
+    backgroundColor: '#090C16',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});
+

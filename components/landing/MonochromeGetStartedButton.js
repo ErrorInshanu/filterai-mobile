@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { StyleSheet, Text, Pressable, View } from 'react-native';
+import { StyleSheet, Text, Pressable } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -21,17 +21,17 @@ export default function MonochromeGetStartedButton({ onPress, title = 'Get Start
 
   useEffect(() => {
     glowOpacity.value = withRepeat(
-      withTiming(0.75, { duration: 1800, easing: Easing.inOut(Easing.quad) }),
+      withTiming(0.85, { duration: 1800, easing: Easing.inOut(Easing.quad) }),
       -1,
       true
     );
 
     glowScale.value = withRepeat(
-      withTiming(1.05, { duration: 1800, easing: Easing.inOut(Easing.quad) }),
+      withTiming(1.08, { duration: 1800, easing: Easing.inOut(Easing.quad) }),
       -1,
       true
     );
-  }, []);
+  }, [glowOpacity, glowScale]);
 
   const handlePressIn = () => {
     scale.value = withSpring(0.95, { damping: 15, stiffness: 250 });
@@ -67,13 +67,21 @@ export default function MonochromeGetStartedButton({ onPress, title = 'Get Start
 
   return (
     <Animated.View entering={FadeInUp.delay(delay).duration(800)} style={styles.outerContainer}>
-      {/* Outer Breathing Glow */}
+      {/* Outer Breathing Glow (Multi-layered native diffusion halo) */}
       <Animated.View style={[styles.breathingGlow, glowStyle]}>
+        {/* Layer 1: Wide soft outer aura */}
         <LinearGradient
-          colors={['rgba(99, 102, 241, 0.6)', 'rgba(139, 92, 246, 0.2)']}
+          colors={['rgba(99, 102, 241, 0.35)', 'rgba(139, 92, 246, 0.15)', 'transparent']}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 0 }}
-          style={styles.glowGradient}
+          style={styles.glowLayerOuter}
+        />
+        {/* Layer 2: Concentrated core illumination */}
+        <LinearGradient
+          colors={['rgba(99, 102, 241, 0.65)', 'rgba(139, 92, 246, 0.35)', 'transparent']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.glowLayerInner}
         />
       </Animated.View>
 
@@ -90,10 +98,12 @@ export default function MonochromeGetStartedButton({ onPress, title = 'Get Start
             end={{ x: 1, y: 0 }}
             style={styles.gradientButton}
           >
-            {/* Burst Overlay */}
-            <Animated.View style={[styles.burstOverlay, burstStyle]}>
+            {/* Burst Overlay on press release */}
+            <Animated.View style={[styles.burstOverlay, burstStyle]} pointerEvents="none">
               <LinearGradient
-                colors={['rgba(255, 255, 255, 0.6)', 'rgba(99, 102, 241, 0)']}
+                colors={['rgba(255, 255, 255, 0.7)', 'rgba(139, 92, 246, 0.3)', 'transparent']}
+                start={{ x: 0.5, y: 0.5 }}
+                end={{ x: 1, y: 1 }}
                 style={styles.burstGradient}
               />
             </Animated.View>
@@ -116,15 +126,29 @@ const styles = StyleSheet.create({
   },
   breathingGlow: {
     position: 'absolute',
-    width: '85%',
-    height: 56,
+    width: '90%',
+    maxWidth: 340,
+    height: 68,
     borderRadius: 9999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 22,
+    elevation: 12,
   },
-  glowGradient: {
+  glowLayerOuter: {
+    position: 'absolute',
     width: '100%',
     height: '100%',
     borderRadius: 9999,
-    filter: 'blur(16px)',
+  },
+  glowLayerInner: {
+    position: 'absolute',
+    width: '92%',
+    height: 56,
+    borderRadius: 9999,
   },
   buttonWrapper: {
     width: '85%',
@@ -171,3 +195,4 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
 });
+

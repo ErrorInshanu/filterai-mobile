@@ -226,7 +226,11 @@ export default function HomeScreen() {
                 <Text style={styles.headerSubtitle}>Ready to screen candidates</Text>
               </View>
 
-              <TouchableOpacity style={styles.userAvatarBtn} activeOpacity={0.8}>
+              <TouchableOpacity
+                style={styles.userAvatarBtn}
+                activeOpacity={0.8}
+                onPress={() => navigation.navigate('MainTabs', { screen: 'Profile' })}
+              >
                 <User size={20} color="#A78BFA" />
               </TouchableOpacity>
             </View>

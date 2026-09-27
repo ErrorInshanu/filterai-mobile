@@ -81,11 +81,17 @@ export default function MonochromeZoomingLogo() {
 
   return (
     <View style={styles.container}>
-      {/* Background Soft Purple Glow Halo */}
+      {/* Background Soft Purple Glow Halo (Multi-layered native diffusion) */}
       <Animated.View style={[styles.haloRing, haloAnimatedStyle]}>
+        {/* Layer 1: Wide soft outer aura */}
         <LinearGradient
-          colors={['rgba(139, 92, 246, 0.45)', 'rgba(99, 102, 241, 0.15)', 'transparent']}
-          style={styles.haloGradient}
+          colors={['rgba(139, 92, 246, 0.35)', 'rgba(99, 102, 241, 0.12)', 'transparent']}
+          style={styles.haloLayerOuter}
+        />
+        {/* Layer 2: Concentrated inner glow */}
+        <LinearGradient
+          colors={['rgba(139, 92, 246, 0.6)', 'rgba(99, 102, 241, 0.25)', 'transparent']}
+          style={styles.haloLayerInner}
         />
       </Animated.View>
 
@@ -107,18 +113,32 @@ const styles = StyleSheet.create({
   },
   haloRing: {
     position: 'absolute',
-    width: 120,
-    height: 120,
-    borderRadius: 36,
+    width: 130,
+    height: 130,
+    borderRadius: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#8B5CF6',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.85,
+    shadowRadius: 24,
+    elevation: 12,
   },
-  haloGradient: {
+  haloLayerOuter: {
+    position: 'absolute',
     width: '100%',
     height: '100%',
-    borderRadius: 36,
-    filter: 'blur(20px)',
+    borderRadius: 40,
+  },
+  haloLayerInner: {
+    position: 'absolute',
+    width: '84%',
+    height: '84%',
+    borderRadius: 32,
   },
   logoWrapper: {
     alignItems: 'center',
     justifyContent: 'center',
   },
 });
+

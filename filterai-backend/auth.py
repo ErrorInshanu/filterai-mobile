@@ -10,7 +10,7 @@ load_dotenv()
 
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_DAYS = 7
+ACCESS_TOKEN_EXPIRE_DAYS = 15
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
