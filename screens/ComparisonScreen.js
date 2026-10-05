@@ -20,6 +20,7 @@ import {
 } from 'lucide-react-native';
 import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   ScrollView,
   StyleSheet,
@@ -32,6 +33,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import MonochromeBackground from '../components/landing/MonochromeBackground';
 import { useAppStore } from '../store/useAppStore';
+import { downloadAndShareReport } from './ReportScreen';
 
 function getInitials(name) {
   if (!name || !name.trim()) return 'CA';
@@ -75,41 +77,63 @@ export default function ComparisonScreen() {
   const route = useRoute();
 
   // Zustand Store
-  const storeCandidates = useAppStore((state) => state.candidates) || [];
-  const comparisonSelection = useAppStore((state) => state.comparisonSelection) || [];
+  const storeCandidatesRaw = useAppStore((state) => state.candidates);
+  const comparisonSelectionRaw = useAppStore((state) => state.comparisonSelection);
   const toggleComparisonSelection = useAppStore((state) => state.toggleComparisonSelection);
   const updateCandidateStatus = useAppStore((state) => state.updateCandidateStatus);
   const jobDescription = useAppStore((state) => state.jobDescription);
+  const token = useAppStore((state) => state.token || state.authToken);
+  const currentBatchId = useAppStore((state) => state.currentBatchId);
+  const activeBatch = useAppStore((state) => state.activeBatch);
+
+  const storeCandidates = useMemo(() => storeCandidatesRaw || [], [storeCandidatesRaw]);
+  const comparisonSelection = useMemo(() => comparisonSelectionRaw || [], [comparisonSelectionRaw]);
 
   // Shortlisting threshold state
   const [threshold, setThreshold] = useState(75);
   const [toastMessage, setToastMessage] = useState(null);
+  const [isExporting, setIsExporting] = useState(false);
 
   // Resolve candidates to compare:
   // 1. From route.params?.candidates if explicitly passed
   // 2. From comparisonSelection matching storeCandidates
   // 3. Fallback: if comparisonSelection is empty, take top 2 or 3 candidates from storeCandidates
   const comparedCandidates = useMemo(() => {
+    let list = [];
     if (route.params?.candidates && Array.isArray(route.params.candidates)) {
-      return route.params.candidates.slice(0, 3);
-    }
-
-    if (comparisonSelection.length > 0) {
+      list = route.params.candidates.slice(0, 3);
+    } else if (comparisonSelection.length > 0) {
       const selected = storeCandidates.filter((c) =>
         comparisonSelection.includes(c.candidate_id || c.id)
       );
-      if (selected.length > 0) return selected.slice(0, 3);
-    }
-
-    // Default fallback: top 3 candidates by match_score
-    if (storeCandidates.length >= 2) {
-      return [...storeCandidates]
+      if (selected.length > 0) list = selected.slice(0, 3);
+    } else if (storeCandidates.length >= 2) {
+      list = [...storeCandidates]
         .sort((a, b) => (b.match_score || 0) - (a.match_score || 0))
         .slice(0, 3);
+    } else {
+      list = storeCandidates.slice(0, 3);
     }
 
-    return storeCandidates.slice(0, 3);
+    // Always merge with latest candidate data from store
+    return list.map((c) => {
+      const cId = c.candidate_id || c.id;
+      const latest = storeCandidates.find(
+        (sc) =>
+          (cId && (sc.candidate_id === cId || sc.id === cId)) ||
+          (c.file_name && sc.file_name === c.file_name)
+      );
+      return latest ? { ...c, ...latest } : c;
+    });
   }, [storeCandidates, comparisonSelection, route.params]);
+
+  const effectiveBatchId =
+    route.params?.batch_id ||
+    currentBatchId ||
+    activeBatch?.batch_id ||
+    activeBatch?.id ||
+    comparedCandidates[0]?.batch_id ||
+    null;
 
   // Handle shortlisting all candidates above threshold
   const handleShortlistAboveThreshold = () => {
@@ -134,12 +158,27 @@ export default function ComparisonScreen() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  const handleExportPress = () => {
-    Alert.alert(
-      'Export Report',
-      'Candidate comparison PDF/CSV export is coming soon in the upcoming reporting release.',
-      [{ text: 'Got it' }]
-    );
+  const handleExportPress = async () => {
+    if (!effectiveBatchId) {
+      Alert.alert(
+        'Export Report',
+        'No active batch ID found. Please analyze a batch first to generate an official PDF report.'
+      );
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      await downloadAndShareReport(effectiveBatchId, token);
+    } catch (err) {
+      console.log('Comparison export error:', err);
+      Alert.alert(
+        'Export Failed',
+        err.message || 'Failed to generate or download the PDF report. Please verify your connection.'
+      );
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const handleCandidateCardPress = (candidate) => {
@@ -248,11 +287,16 @@ export default function ComparisonScreen() {
           </View>
 
           <TouchableOpacity
-            style={styles.exportBtnDisabled}
+            style={[styles.exportBtn, isExporting && styles.exportBtnLoading]}
             activeOpacity={0.7}
+            disabled={isExporting}
             onPress={handleExportPress}
           >
-            <Share2 size={18} color="#6B7280" />
+            {isExporting ? (
+              <ActivityIndicator size="small" color="#C084FC" />
+            ) : (
+              <Share2 size={18} color="#C084FC" />
+            )}
           </TouchableOpacity>
         </View>
 
@@ -600,11 +644,19 @@ export default function ComparisonScreen() {
                   <Text style={styles.attributeSub}>Gaps & Red Flags</Text>
                 </View>
                 {comparedCandidates.map((c, idx) => {
+                  const isAnalyzed = c.red_flags !== undefined && c.red_flags !== null;
                   const hasRedFlags =
-                    Array.isArray(c.red_flags) && c.red_flags.length > 0;
+                    isAnalyzed && Array.isArray(c.red_flags) && c.red_flags.length > 0;
                   return (
                     <View key={idx} style={styles.candidateDataColumn}>
-                      {hasRedFlags ? (
+                      {!isAnalyzed ? (
+                        <>
+                          <Clock size={16} color="#9CA3AF" style={{ marginBottom: 2 }} />
+                          <Text style={[styles.attributeValueText, { color: '#9CA3AF', fontSize: 11 }]}>
+                            Not yet analyzed
+                          </Text>
+                        </>
+                      ) : hasRedFlags ? (
                         <>
                           <AlertTriangle size={16} color="#EF4444" style={{ marginBottom: 2 }} />
                           <Text style={[styles.attributeValueText, { color: '#F87171' }]}>
@@ -712,16 +764,18 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginTop: 2,
   },
-  exportBtnDisabled: {
+  exportBtn: {
     width: 40,
     height: 40,
     borderRadius: 12,
-    backgroundColor: 'rgba(15, 20, 36, 0.5)',
+    backgroundColor: 'rgba(167, 139, 250, 0.15)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: 'rgba(167, 139, 250, 0.35)',
     alignItems: 'center',
     justifyContent: 'center',
-    opacity: 0.6,
+  },
+  exportBtnLoading: {
+    opacity: 0.8,
   },
   toastBanner: {
     flexDirection: 'row',

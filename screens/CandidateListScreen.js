@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import {
+  Alert,
   StyleSheet,
   Text,
   View,
@@ -11,7 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
-import { Search, Mail, FileText, ChevronRight, Users, Sparkles, Scale, FileSpreadsheet } from 'lucide-react-native';
+import { Search, Mail, FileText, ChevronRight, Users, Sparkles, Scale, FileSpreadsheet, Check, X } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 
 import MonochromeBackground from '../components/landing/MonochromeBackground';
@@ -20,10 +21,14 @@ import { useAppStore } from '../store/useAppStore';
 export default function CandidateListScreen() {
   const navigation = useNavigation();
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSelectMode, setIsSelectMode] = useState(false);
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState([]);
 
   // Read candidates and currentBatchId from Zustand store
   const storeCandidates = useAppStore((state) => state.candidates);
   const currentBatchId = useAppStore((state) => state.currentBatchId);
+  const toggleComparisonSelection = useAppStore((state) => state.toggleComparisonSelection);
+  const setComparisonSelection = useAppStore((state) => state.setComparisonSelection);
 
 
   // Defensively sort candidates by match_score descending
@@ -79,6 +84,52 @@ export default function CandidateListScreen() {
     navigation.navigate('CandidateDetail', { candidate });
   };
 
+  const handleCandidateCardPress = (candidate) => {
+    const cId = candidate.candidate_id || candidate.id;
+    if (isSelectMode) {
+      if (selectedCandidateIds.includes(cId)) {
+        setSelectedCandidateIds((prev) => prev.filter((id) => id !== cId));
+      } else {
+        if (selectedCandidateIds.length >= 3) {
+          Alert.alert('Comparison Limit', 'You can compare up to 3 candidates.');
+          return;
+        }
+        setSelectedCandidateIds((prev) => [...prev, cId]);
+      }
+    } else {
+      handleCandidatePress(candidate);
+    }
+  };
+
+  const handleCompare = () => {
+    if (selectedCandidateIds.length === 1) {
+      Alert.alert('Compare Candidates', 'Please select at least 2 candidates to compare.');
+      return;
+    }
+
+    if (selectedCandidateIds.length >= 2) {
+      if (setComparisonSelection) {
+        setComparisonSelection(selectedCandidateIds);
+      } else {
+        const current = useAppStore.getState().comparisonSelection || [];
+        current.forEach((id) => toggleComparisonSelection(id));
+        selectedCandidateIds.forEach((id) => toggleComparisonSelection(id));
+      }
+    } else {
+      // Fallback: 0 selected leaves comparisonSelection empty for top 3 fallback
+      if (setComparisonSelection) {
+        setComparisonSelection([]);
+      } else {
+        const current = useAppStore.getState().comparisonSelection || [];
+        current.forEach((id) => toggleComparisonSelection(id));
+      }
+    }
+
+    setIsSelectMode(false);
+    setSelectedCandidateIds([]);
+    navigation.navigate('Comparison');
+  };
+
   const renderCandidateCard = ({ item, index }) => {
     const rawScore = typeof item.match_score === 'number' ? item.match_score : 0;
     const score = Math.min(100, Math.max(0, Math.round(rawScore)));
@@ -92,16 +143,31 @@ export default function CandidateListScreen() {
 
     const email = item.extracted_email || item.email;
     const animationDelay = Math.min(index * 60, 450);
+    const cId = item.candidate_id || item.id || `cand_${index}`;
+    const isSelected = selectedCandidateIds.includes(cId);
 
     return (
       <Animated.View entering={FadeInUp.delay(animationDelay).duration(400)}>
         <TouchableOpacity
           activeOpacity={0.85}
-          onPress={() => handleCandidatePress(item)}
-          style={styles.candidateCard}
+          onPress={() => handleCandidateCardPress(item)}
+          style={[
+            styles.candidateCard,
+            isSelectMode && isSelected && styles.candidateCardSelected,
+          ]}
         >
           {/* Card Header: Candidate Name & Match Score Badge */}
           <View style={styles.cardHeaderRow}>
+            {isSelectMode && (
+              <View
+                style={[
+                  styles.checkboxIndicator,
+                  isSelected && styles.checkboxIndicatorSelected,
+                ]}
+              >
+                {isSelected && <Check size={13} color="#FFFFFF" strokeWidth={3} />}
+              </View>
+            )}
             <View style={styles.nameContainer}>
               <Text style={styles.candidateName} numberOfLines={1}>
                 {displayName}
@@ -175,23 +241,39 @@ export default function CandidateListScreen() {
         <View>
           <Text style={styles.headerTitle}>Candidates</Text>
           <Text style={styles.headerSubtitle}>
-            {sortedCandidates.length} {sortedCandidates.length === 1 ? 'candidate' : 'candidates'} ranked
+            {isSelectMode
+              ? `${selectedCandidateIds.length}/3 selected to compare`
+              : `${sortedCandidates.length} ${sortedCandidates.length === 1 ? 'candidate' : 'candidates'} ranked`}
           </Text>
         </View>
 
         <View style={styles.headerButtonsRow}>
-          {sortedCandidates.length > 1 && (
+          {sortedCandidates.length > 1 && !isSelectMode && (
             <TouchableOpacity
               style={styles.compareHeaderBtn}
               activeOpacity={0.8}
-              onPress={() => navigation.navigate('Comparison')}
+              onPress={() => setIsSelectMode(true)}
             >
               <Scale size={15} color="#C084FC" style={{ marginRight: 6 }} />
               <Text style={styles.compareHeaderBtnText}>Compare</Text>
             </TouchableOpacity>
           )}
 
-          {sortedCandidates.length > 0 && (
+          {isSelectMode && (
+            <TouchableOpacity
+              style={styles.cancelHeaderBtn}
+              activeOpacity={0.8}
+              onPress={() => {
+                setIsSelectMode(false);
+                setSelectedCandidateIds([]);
+              }}
+            >
+              <X size={15} color="#EF4444" style={{ marginRight: 4 }} />
+              <Text style={styles.cancelHeaderBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          )}
+
+          {sortedCandidates.length > 0 && !isSelectMode && (
             <TouchableOpacity
               style={styles.reportHeaderBtn}
               activeOpacity={0.8}
@@ -276,10 +358,35 @@ export default function CandidateListScreen() {
             renderItem={renderCandidateCard}
             ListHeaderComponent={renderHeader}
             ListEmptyComponent={renderEmptyState}
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={[
+              styles.listContent,
+              isSelectMode && { paddingBottom: 90 },
+            ]}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           />
+
+          {isSelectMode && (
+            <View style={styles.floatingBottomBar}>
+              <TouchableOpacity
+                style={[
+                  styles.compareSelectedBtn,
+                  selectedCandidateIds.length === 1 && styles.compareSelectedBtnDisabled,
+                ]}
+                activeOpacity={0.85}
+                onPress={handleCompare}
+              >
+                <Scale size={18} color="#FFFFFF" style={{ marginRight: 8 }} />
+                <Text style={styles.compareSelectedBtnText}>
+                  {selectedCandidateIds.length >= 2
+                    ? `Compare Selected (${selectedCandidateIds.length})`
+                    : selectedCandidateIds.length === 1
+                    ? 'Select at least 2 to compare'
+                    : 'Compare (Top 3)'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </KeyboardAvoidingView>
       </SafeAreaView>
     </View>
@@ -343,6 +450,71 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: '#C084FC',
+  },
+  cancelHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.35)',
+  },
+  cancelHeaderBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#F87171',
+  },
+  checkboxIndicator: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+    marginTop: 2,
+  },
+  checkboxIndicatorSelected: {
+    borderColor: '#8B5CF6',
+    backgroundColor: '#8B5CF6',
+  },
+  candidateCardSelected: {
+    borderColor: '#8B5CF6',
+    backgroundColor: 'rgba(139, 92, 246, 0.12)',
+  },
+  floatingBottomBar: {
+    position: 'absolute',
+    bottom: 16,
+    left: 20,
+    right: 20,
+    alignItems: 'center',
+  },
+  compareSelectedBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#8B5CF6',
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 16,
+    width: '100%',
+    shadowColor: '#8B5CF6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  compareSelectedBtnDisabled: {
+    backgroundColor: 'rgba(139, 92, 246, 0.45)',
+    shadowOpacity: 0.1,
+  },
+  compareSelectedBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   reportHeaderBtn: {
     flexDirection: 'row',

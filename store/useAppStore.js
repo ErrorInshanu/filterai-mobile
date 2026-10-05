@@ -134,14 +134,46 @@ export const useAppStore = create(
       updateCandidateStatus: (candidateId, newStatus) =>
         set((state) => ({
           candidates: state.candidates.map((candidate) =>
-            candidate.candidate_id === candidateId || candidate.id === candidateId
-              ? { ...candidate, status: newStatus }
+            candidate.candidate_id === candidateId ||
+            candidate.id === candidateId ||
+            (candidate.file_name && candidate.file_name === candidateId)
+              ? {
+                  ...candidate,
+                  status: newStatus,
+                  shortlisted: newStatus === 'shortlisted',
+                }
               : candidate
           ),
         })),
 
+      setCandidateInsights: (candidateId, insights, fileName) =>
+        set((state) => ({
+          candidates: state.candidates.map((candidate) => {
+            const isMatch =
+              (candidateId &&
+                (candidate.candidate_id === candidateId || candidate.id === candidateId)) ||
+              (fileName && candidate.file_name === fileName) ||
+              (candidateId && candidate.file_name === candidateId);
+            return isMatch
+              ? {
+                  ...candidate,
+                  ...insights,
+                  insights,
+                  red_flags: insights?.red_flags ?? candidate.red_flags,
+                }
+              : candidate;
+          }),
+        })),
+
       // --- Comparison state (In-Memory Only) ---
       comparisonSelection: [], // array of candidate_ids, max 3
+
+      setComparisonSelection: (comparisonSelection) =>
+        set({
+          comparisonSelection: Array.isArray(comparisonSelection)
+            ? comparisonSelection.slice(0, 3)
+            : [],
+        }),
 
       toggleComparisonSelection: (candidateId) =>
         set((state) => {
