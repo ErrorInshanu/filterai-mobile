@@ -48,6 +48,9 @@ export default function CandidateDetailScreen() {
   // Read real candidate object passed from CandidateListScreen
   const rawCandidate = route.params?.candidate || {};
   const currentBatchId = useAppStore((state) => state.currentBatchId);
+  const storeCandidates = useAppStore((state) => state.candidates);
+  const updateCandidateStatus = useAppStore((state) => state.updateCandidateStatus);
+  const setCandidateInsights = useAppStore((state) => state.setCandidateInsights);
 
   const rawScore = typeof rawCandidate.match_score === 'number' ? rawCandidate.match_score : 0;
   const matchScore = Math.min(100, Math.max(0, Math.round(rawScore)));
@@ -63,10 +66,38 @@ export default function CandidateDetailScreen() {
   const candidateStatus = rawCandidate.status || 'pending';
 
   const [activeTab, setActiveTab] = useState('overview');
-  const [isShortlisted, setIsShortlisted] = useState(rawCandidate.shortlisted ?? false);
+
+  const matchedCandidate = (storeCandidates || []).find(
+    (c) =>
+      (candidateId !== 'N/A' && (c.candidate_id === candidateId || c.id === candidateId)) ||
+      (fileName && c.file_name === fileName)
+  );
+
+  const [localShortlisted, setLocalShortlisted] = useState(
+    rawCandidate.status === 'shortlisted' || Boolean(rawCandidate.shortlisted)
+  );
+
+  const isShortlisted = matchedCandidate
+    ? matchedCandidate.status === 'shortlisted' || Boolean(matchedCandidate.shortlisted)
+    : localShortlisted;
+
+  const handleToggleShortlist = () => {
+    const nextVal = !isShortlisted;
+    const newStatus = nextVal ? 'shortlisted' : 'pending';
+    setLocalShortlisted(nextVal);
+    const targetId =
+      candidateId !== 'N/A'
+        ? candidateId
+        : fileName || rawCandidate.id || rawCandidate.candidate_id;
+    if (targetId) {
+      updateCandidateStatus(targetId, newStatus);
+    }
+  };
 
   // AI Insights State
-  const [insights, setInsights] = useState(null);
+  const [insights, setInsights] = useState(
+    matchedCandidate?.insights || (matchedCandidate?.red_flags ? matchedCandidate : null)
+  );
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
   const [insightsError, setInsightsError] = useState('');
 
@@ -104,6 +135,13 @@ export default function CandidateDetailScreen() {
 
       if (data && data.insights) {
         setInsights(data.insights);
+        const targetId =
+          candidateId !== 'N/A'
+            ? candidateId
+            : fileName || rawCandidate.id || rawCandidate.candidate_id;
+        if (targetId && setCandidateInsights) {
+          setCandidateInsights(targetId, data.insights, fileName);
+        }
       }
       setIsLoadingInsights(false);
     } catch (err) {
@@ -111,7 +149,15 @@ export default function CandidateDetailScreen() {
       setInsightsError('Unable to connect to AI analysis service. Please check your connection.');
       setIsLoadingInsights(false);
     }
-  }, [rawCandidate.batch_id, rawCandidate.candidate_id, currentBatchId, candidateId, fileName]);
+  }, [
+    rawCandidate.batch_id,
+    rawCandidate.candidate_id,
+    rawCandidate.id,
+    currentBatchId,
+    candidateId,
+    fileName,
+    setCandidateInsights,
+  ]);
 
   useEffect(() => {
     fetchInsights();
@@ -429,7 +475,7 @@ export default function CandidateDetailScreen() {
           <TouchableOpacity
             style={styles.iconButton}
             activeOpacity={0.7}
-            onPress={() => setIsShortlisted(!isShortlisted)}
+            onPress={handleToggleShortlist}
           >
             <Star
               size={22}

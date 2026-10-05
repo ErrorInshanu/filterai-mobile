@@ -55,13 +55,53 @@ function getScoreBadge(score = 0) {
   }
 }
 
+export async function downloadAndShareReport(batchId, token) {
+  if (!batchId) {
+    throw new Error(
+      'No active batch ID found. Please analyze a batch first to generate an official PDF report.'
+    );
+  }
+
+  const headers = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const fileUri = `${
+    FileSystem.documentDirectory || FileSystem.cacheDirectory
+  }FilterAI_Report_${batchId}.pdf`;
+
+  const downloadResult = await FileSystem.downloadAsync(
+    `${API_URL}/api/generate-report/${batchId}`,
+    fileUri,
+    { headers }
+  );
+
+  if (downloadResult.status !== 200) {
+    throw new Error(
+      `Server returned status ${downloadResult.status} when generating PDF report.`
+    );
+  }
+
+  const isShareAvailable = await Sharing.isAvailableAsync();
+  if (isShareAvailable) {
+    await Sharing.shareAsync(downloadResult.uri, {
+      mimeType: 'application/pdf',
+      dialogTitle: `FilterAI Report - Batch ${batchId}`,
+      UTI: 'com.adobe.pdf',
+    });
+  }
+
+  return downloadResult;
+}
+
 export default function ReportScreen() {
   const navigation = useNavigation();
   const route = useRoute();
 
   // Auth & Store Data
   const token = useAppStore((state) => state.token);
-  const storeCandidates = useAppStore((state) => state.candidates) || [];
+  const storeCandidates = useAppStore((state) => state.candidates);
   const currentBatchId = useAppStore((state) => state.currentBatchId);
   const activeBatch = useAppStore((state) => state.activeBatch);
   const jobDescription = useAppStore((state) => state.jobDescription);
@@ -136,36 +176,7 @@ export default function ReportScreen() {
     setDownloadSuccess(null);
 
     try {
-      const headers = {};
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-
-      const fileUri = `${
-        FileSystem.documentDirectory || FileSystem.cacheDirectory
-      }FilterAI_Report_${effectiveBatchId}.pdf`;
-
-      const downloadResult = await FileSystem.downloadAsync(
-        `${API_URL}/api/generate-report/${effectiveBatchId}`,
-        fileUri,
-        { headers }
-      );
-
-      if (downloadResult.status !== 200) {
-        throw new Error(
-          `Server returned status ${downloadResult.status} when generating PDF report.`
-        );
-      }
-
-      const isShareAvailable = await Sharing.isAvailableAsync();
-      if (isShareAvailable) {
-        await Sharing.shareAsync(downloadResult.uri, {
-          mimeType: 'application/pdf',
-          dialogTitle: `FilterAI Report - Batch ${effectiveBatchId}`,
-          UTI: 'com.adobe.pdf',
-        });
-      }
-
+      await downloadAndShareReport(effectiveBatchId, token);
       setDownloadSuccess('PDF report generated and exported successfully.');
       setTimeout(() => setDownloadSuccess(null), 5000);
     } catch (err) {
